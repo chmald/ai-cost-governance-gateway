@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": { "value": "${AZURE_ENV_NAME}" },
+    "location": { "value": "${AZURE_LOCATION}" },
+    "jobName": { "value": "${MIGRATION_JOB_NAME}" },
+    "containerAppsEnvironmentName": { "value": "${AZURE_CONTAINER_APPS_ENVIRONMENT_NAME}" },
+    "containerRegistryName": { "value": "${AZURE_CONTAINER_REGISTRY_NAME}" },
+    "migrationIdentityId": { "value": "${MIGRATION_IDENTITY_ID}" },
+    "migrationClientId": { "value": "${MIGRATION_CLIENT_ID}" },
+    "migrationPrincipalName": { "value": "${MIGRATION_PRINCIPAL_NAME}" },
+    "runtimePrincipalId": { "value": "${RUNTIME_PRINCIPAL_ID}" },
+    "postgresHost": { "value": "${POSTGRES_HOST}" },
+    "postgresDatabase": { "value": "${POSTGRES_DATABASE}" },
+    "postgresAppRole": { "value": "${POSTGRES_APP_ROLE}" },
+    "imageName": { "value": "${GATEWAY_DEPLOY_IMAGE}" }
+  }
+}

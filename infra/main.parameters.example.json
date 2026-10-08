@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": { "value": "REPLACE_WITH_AZURE_REGION" },
+    "appName": { "value": "REPLACE_WITH_APP_NAME" },
+    "apimServiceName": { "value": "REPLACE_WITH_GLOBALLY_UNIQUE_APIM_NAME" },
+    "publisherName": { "value": "REPLACE_WITH_OPERATOR_NAME" },
+    "publisherEmail": { "value": "REPLACE_WITH_OPERATOR_EMAIL" },
+    "apimSku": { "value": "StandardV2" },
+    "containerRegistryName": { "value": "REPLACE_WITH_EXISTING_ACR_IN_TARGET_RG" },
+    "imageRepositoryDigest": { "value": "gateway@sha256:REPLACE_WITH_TESTED_IMAGE_DIGEST" },
+    "databaseUrl": {
+      "reference": {
+        "keyVault": {
+          "id": "/subscriptions/REPLACE_WITH_SUBSCRIPTION_ID/resourceGroups/REPLACE_WITH_SECRET_RG/providers/Microsoft.KeyVault/vaults/REPLACE_WITH_VAULT"
+        },
+        "secretName": "REPLACE_WITH_PRODUCTION_POSTGRES_SECRET_NAME"
+      }
+    },
+    "azureTenantId": { "value": "REPLACE_WITH_TENANT_GUID" },
+    "entraSpaClientId": { "value": "REPLACE_WITH_SPA_APPLICATION_GUID" },
+    "entraApiAudience": { "value": "REPLACE_WITH_USER_API_APPLICATION_GUID" },
+    "entraApiScope": { "value": "api://REPLACE_WITH_API_APPLICATION_GUID/access_as_user" },
+    "gatewayApiAudience": { "value": "REPLACE_WITH_GATEWAY_PROOF_APPLICATION_GUID" },
+    "foundryResourceGroup": { "value": "REPLACE_WITH_EXISTING_FOUNDRY_RG" },
+    "foundryAccountName": { "value": "REPLACE_WITH_EXISTING_FOUNDRY_ACCOUNT" },
+    "foundryEndpoint": { "value": "https://REPLACE_WITH_EXISTING_ACCOUNT.openai.azure.com" },
+    "mcpAllowedHosts": { "value": [] },
+    "mcpAllowedAudiences": { "value": [] },
+    "infrastructureSubnetId": { "value": "" }
+  }
+}

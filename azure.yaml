@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+name: foundry-ai-gateway
+requiredVersions:
+  azd: ">= 1.30.0 < 2.0.0"
+infra:
+  provider: bicep
+  path: infra/azd
+  module: main
+services:
+  gateway:
+    project: .
+    language: docker
+    host: containerapp
+    module: gateway
+    resourceGroup: ${AZURE_RESOURCE_GROUP}
+    resourceName: ${AZURE_CONTAINER_APP_NAME}
+    apiVersion: "2025-01-01"
+    docker:
+      path: ./Dockerfile
+      context: .
+      platform: linux/amd64
+      remoteBuild: true
+    hooks:
+      prepackage:
+        shell: pwsh
+        run: node ./scripts/azd/run.mjs check
+        continueOnError: false
+      predeploy:
+        shell: pwsh
+        run: node ./scripts/azd/run.mjs migrate
+        continueOnError: false
+      postdeploy:
+        shell: pwsh
+        run: node ./scripts/azd/run.mjs verify
+        continueOnError: false
+hooks:
+  preup:
+    shell: pwsh
+    run: node ./scripts/azd/run.mjs prepare
+    interactive: true
+    continueOnError: false
+  preprovision:
+    shell: pwsh
+    run: node ./scripts/azd/run.mjs check-target
+    interactive: true
+    continueOnError: false
+  predown:
+    shell: pwsh
+    run: node ./scripts/azd/run.mjs guard-down
+    interactive: true
+    continueOnError: false

@@ -1,0 +1,86 @@
+<policies>
+  <inbound>
+    <base />
+    <!-- Delegated users (Gateway.User/Admin + scp) and app-only callers (Gateway.Agent application role:
+         managed identities, service principals, agent identities). The API enforces scp vs. app-only rules. -->
+    <validate-azure-ad-token tenant-id="{{entra-tenant-id}}" header-name="Authorization" failed-validation-httpcode="401" failed-validation-error-message="A valid tenant access token with a gateway role is required." output-token-variable-name="callerJwt">
+      <audiences>
+        <audience>{{entra-api-audience}}</audience>
+      </audiences>
+      <required-claims>
+        <claim name="roles" match="any">
+          <value>Gateway.User</value>
+          <value>Gateway.Admin</value>
+          <value>Gateway.Agent</value>
+        </claim>
+      </required-claims>
+    </validate-azure-ad-token>
+    <choose>
+      <when condition='@(string.IsNullOrEmpty(((Jwt)context.Variables["callerJwt"]).Claims.GetValueOrDefault("oid", "")))'>
+        <return-response>
+          <set-status code="403" reason="A principal object ID is required" />
+        </return-response>
+      </when>
+      <when condition='@(context.Request.Method != "POST" || context.Operation.Id != "chat-completions" || context.Request.Url.Query.Count != 0)'>
+        <return-response>
+          <set-status code="404" reason="Unsupported inference route" />
+        </return-response>
+      </when>
+      <when condition='@(!context.Request.Headers.GetValueOrDefault("Content-Type", "").Split(&apos;;&apos;)[0].Trim().Equals("application/json", StringComparison.OrdinalIgnoreCase) || context.Request.Headers.GetValueOrDefault("Content-Encoding", "identity") != "identity")'>
+        <return-response>
+          <set-status code="415" reason="Only uncompressed JSON is supported" />
+        </return-response>
+      </when>
+    </choose>
+    <rate-limit-by-key calls="60" renewal-period="60" counter-key='@("inference:" + ((Jwt)context.Variables["callerJwt"]).Claims.GetValueOrDefault("oid", ""))' />
+    <validate-content unspecified-content-type-action="ignore" max-size="65536" size-exceeded-action="prevent" />
+    <!-- optional-llm-token-limit -->
+    <!-- Chargeback dimensions are bounded identifiers only (never prompt or completion content).
+         Team and model are validated again by the ledger; metrics are emitted only when usage is returned. -->
+    <set-variable name="metricTeam" value='@{
+      var team = context.Request.Headers.GetValueOrDefault("X-Team-Id", "");
+      return System.Text.RegularExpressions.Regex.IsMatch(team, "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$") ? team : "invalid";
+    }' />
+    <set-variable name="metricModel" value='@{
+      try {
+        var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+        var model = (string)body["model"] ?? "";
+        return System.Text.RegularExpressions.Regex.IsMatch(model, "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$") ? model : "invalid";
+      } catch { return "invalid"; }
+    }' />
+    <set-variable name="metricClientApp" value='@{
+      var jwt = (Jwt)context.Variables["callerJwt"];
+      var client = jwt.Claims.GetValueOrDefault("azp", jwt.Claims.GetValueOrDefault("appid", ""));
+      return System.Text.RegularExpressions.Regex.IsMatch(client, "^[0-9a-fA-F-]{36}$") ? client.ToLowerInvariant() : "unknown";
+    }' />
+    <set-variable name="metricCallerType" value='@(string.IsNullOrEmpty(((Jwt)context.Variables["callerJwt"]).Claims.GetValueOrDefault("scp", "")) ? "app" : "user")' />
+    <llm-emit-token-metric namespace="ai-gateway">
+      <dimension name="API ID" />
+      <dimension name="Team ID" value='@((string)context.Variables["metricTeam"])' />
+      <dimension name="Model" value='@((string)context.Variables["metricModel"])' />
+      <dimension name="Client App ID" value='@((string)context.Variables["metricClientApp"])' />
+      <dimension name="Caller Type" value='@((string)context.Variables["metricCallerType"])' />
+    </llm-emit-token-metric>
+    <set-variable name="userAuthorization" value='@(context.Request.Headers.GetValueOrDefault("Authorization", ""))' />
+    <set-header name="X-Gateway-Authorization" exists-action="delete" />
+    <authentication-managed-identity resource="{{gateway-api-audience}}" output-token-variable-name="gatewayToken" ignore-error="false" />
+    <set-header name="X-Gateway-Authorization" exists-action="override">
+      <value>@("Bearer " + (string)context.Variables["gatewayToken"])</value>
+    </set-header>
+    <set-header name="Authorization" exists-action="override">
+      <value>@((string)context.Variables["userAuthorization"])</value>
+    </set-header>
+    <!-- X-Team-Id is only a selection hint. The API must check JWT oid membership. -->
+  </inbound>
+  <backend>
+    <!-- No retries: a timeout can leave an unresolved billable reservation.
+         The non-streaming, size-bounded (2 MB) response is buffered so llm-emit-token-metric can read usage. -->
+    <forward-request timeout="120" buffer-request-body="false" buffer-response="true" />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>

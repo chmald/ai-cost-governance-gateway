@@ -1,0 +1,4 @@
+*.parameters.local.json
+main.json
+registry.json
+modules/*.json

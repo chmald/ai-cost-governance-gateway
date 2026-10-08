@@ -1,0 +1,46 @@
+<policies>
+  <inbound>
+    <base />
+    <!-- Gateway.Agent admits app-only callers (managed identities, service principals, agent identities). -->
+    <validate-azure-ad-token tenant-id="{{entra-tenant-id}}" header-name="Authorization" failed-validation-httpcode="401" failed-validation-error-message="A valid tenant access token with a gateway role is required." output-token-variable-name="callerJwt">
+      <audiences>
+        <audience>{{entra-api-audience}}</audience>
+      </audiences>
+      <required-claims>
+        <claim name="roles" match="any">
+          <value>Gateway.Reader</value>
+          <value>Gateway.User</value>
+          <value>Gateway.Admin</value>
+          <value>Gateway.Agent</value>
+        </claim>
+      </required-claims>
+    </validate-azure-ad-token>
+    <choose>
+      <when condition='@(string.IsNullOrEmpty(((Jwt)context.Variables["callerJwt"]).Claims.GetValueOrDefault("oid", "")))'>
+        <return-response>
+          <set-status code="403" reason="A principal object ID is required" />
+        </return-response>
+      </when>
+    </choose>
+    <rate-limit-by-key calls="120" renewal-period="60" counter-key='@("readonly:" + ((Jwt)context.Variables["callerJwt"]).Claims.GetValueOrDefault("oid", ""))' />
+    <set-variable name="userAuthorization" value='@(context.Request.Headers.GetValueOrDefault("Authorization", ""))' />
+    <set-header name="X-Team-Id" exists-action="delete" />
+    <set-header name="X-Gateway-Authorization" exists-action="delete" />
+    <authentication-managed-identity resource="{{gateway-api-audience}}" output-token-variable-name="gatewayToken" ignore-error="false" />
+    <set-header name="X-Gateway-Authorization" exists-action="override">
+      <value>@("Bearer " + (string)context.Variables["gatewayToken"])</value>
+    </set-header>
+    <set-header name="Authorization" exists-action="override">
+      <value>@((string)context.Variables["userAuthorization"])</value>
+    </set-header>
+  </inbound>
+  <backend>
+    <forward-request timeout="120" buffer-request-body="false" buffer-response="false" />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>

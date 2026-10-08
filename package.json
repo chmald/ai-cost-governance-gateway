@@ -1,0 +1,25 @@
+{
+  "name": "foundry-ai-gateway",
+  "version": "0.2.0",
+  "private": true,
+  "description": "APIM-centered Foundry and MCP governance with prepaid team budgets",
+  "workspaces": ["apps/*"],
+  "engines": { "node": ">=24 <25" },
+  "scripts": {
+    "dev": "concurrently -k -n api,web \"npm run dev -w @gateway/api\" \"npm run dev -w @gateway/web\"",
+    "build": "npm run build -w @gateway/web && npm run build -w @gateway/api",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present && npm run test:azd",
+    "start": "npm run start -w @gateway/api",
+    "db:migrate": "npm run db:migrate -w @gateway/api",
+    "db:seed": "npm run db:seed -w @gateway/api",
+    "test:integration": "npm run test:integration -w @gateway/api",
+    "test:smoke": "node --test tests/smoke.test.mjs",
+    "test:azd": "node --test tests/azd.test.mjs",
+    "validate:azd": "node scripts/azd/run.mjs check"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3"
+  }
+}

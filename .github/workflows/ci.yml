@@ -1,0 +1,60 @@
+name: Validate gateway
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: gateway_test
+          POSTGRES_USER: gateway_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gateway_test -d gateway_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Verify production PostgreSQL transaction behavior
+        run: npm run test:integration
+        env:
+          TEST_DATABASE_URL: postgresql://gateway_test@127.0.0.1:5432/gateway_test
+      - name: Verify container build
+        run: docker build --tag foundry-ai-gateway:ci .
+  infrastructure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: Azure/setup-azd@v2
+        with:
+          version: "1.30.0"
+      - name: Compile Bicep
+        run: |
+          az bicep install
+          echo "$HOME/.azure/bin" >> "$GITHUB_PATH"
+          az bicep build --file infra/main.bicep --outfile "$RUNNER_TEMP/gateway-template.json"
+      - name: Validate primary azd infrastructure
+        shell: pwsh
+        run: .\scripts\Test-AzdInfrastructure.ps1 -Restore
+      - name: Exercise offline azd hook configuration
+        run: azd hooks run prepackage --no-prompt

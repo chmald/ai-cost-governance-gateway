@@ -1,0 +1,41 @@
+<!-- Reference for runtime registration, not deployed by main.bicep.
+     Replace __AUTH_AUDIENCE__ only after exact operator allowlist validation
+     and XML escaping. Backend owns the equivalent runtime policy generation. -->
+<policies>
+  <inbound>
+    <base />
+    <validate-azure-ad-token tenant-id="{{entra-tenant-id}}" header-name="Authorization" failed-validation-httpcode="401" output-token-variable-name="callerJwt">
+      <audiences>
+        <audience>{{entra-api-audience}}</audience>
+      </audiences>
+      <required-claims>
+        <claim name="roles" match="any">
+          <value>Gateway.User</value>
+          <value>Gateway.Admin</value>
+          <value>Gateway.Agent</value>
+        </claim>
+      </required-claims>
+    </validate-azure-ad-token>
+    <choose>
+      <when condition='@(string.IsNullOrEmpty(((Jwt)context.Variables["callerJwt"]).Claims.GetValueOrDefault("oid", "")))'>
+        <return-response>
+          <set-status code="403" reason="A principal object ID is required" />
+        </return-response>
+      </when>
+    </choose>
+    <rate-limit-by-key calls="60" renewal-period="60" counter-key='@("external-mcp:" + context.Api.Id + ":" + ((Jwt)context.Variables["callerJwt"]).Claims.GetValueOrDefault("oid", ""))' />
+    <set-header name="X-Team-Id" exists-action="delete" />
+    <set-header name="X-Gateway-Authorization" exists-action="delete" />
+    <!-- External servers receive their own MI audience, never the user's token. -->
+    <authentication-managed-identity resource="__AUTH_AUDIENCE__" ignore-error="false" />
+  </inbound>
+  <backend>
+    <forward-request timeout="120" buffer-request-body="false" buffer-response="false" />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>

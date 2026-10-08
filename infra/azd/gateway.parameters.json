@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": { "value": "${AZURE_ENV_NAME}" },
+    "location": { "value": "${AZURE_LOCATION}" },
+    "appName": { "value": "${AZURE_CONTAINER_APP_NAME}" },
+    "containerAppsEnvironmentName": { "value": "${AZURE_CONTAINER_APPS_ENVIRONMENT_NAME}" },
+    "containerRegistryName": { "value": "${AZURE_CONTAINER_REGISTRY_NAME}" },
+    "runtimeIdentityId": { "value": "${RUNTIME_IDENTITY_ID}" },
+    "runtimeClientId": { "value": "${AZURE_CLIENT_ID}" },
+    "imageName": { "value": "${GATEWAY_DEPLOY_IMAGE}" },
+    "azureTenantId": { "value": "${AZURE_TENANT_ID}" },
+    "entraSpaClientId": { "value": "${ENTRA_SPA_CLIENT_ID}" },
+    "entraApiAudience": { "value": "${ENTRA_API_AUDIENCE}" },
+    "entraApiScope": { "value": "${ENTRA_API_SCOPE}" },
+    "gatewayApiAudience": { "value": "${GATEWAY_API_AUDIENCE}" },
+    "apimPrincipalId": { "value": "${APIM_PRINCIPAL_ID}" },
+    "apimServiceName": { "value": "${APIM_SERVICE_NAME}" },
+    "apimResourceGroup": { "value": "${APIM_RESOURCE_GROUP}" },
+    "apimGatewayUrl": { "value": "${APIM_GATEWAY_URL}" },
+    "foundryResourceGroup": { "value": "${FOUNDRY_RESOURCE_GROUP}" },
+    "foundryAccountName": { "value": "${FOUNDRY_ACCOUNT_NAME}" },
+    "foundryEndpoint": { "value": "${FOUNDRY_ENDPOINT}" },
+    "postgresHost": { "value": "${POSTGRES_HOST}" },
+    "postgresDatabase": { "value": "${POSTGRES_DATABASE}" },
+    "postgresAppRole": { "value": "${POSTGRES_APP_ROLE}" },
+    "mcpAllowedHosts": { "value": "${MCP_ALLOWED_HOSTS=}" },
+    "mcpAllowedAudiences": { "value": "${MCP_ALLOWED_AUDIENCES=}" },
+    "minReplicas": { "value": "${GATEWAY_MIN_REPLICAS=1}" },
+    "maxReplicas": { "value": "${GATEWAY_MAX_REPLICAS=3}" }
+  }
+}

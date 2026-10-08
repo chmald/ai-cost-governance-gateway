@@ -1,0 +1,16 @@
+.copilot-azure/
+.azure/*
+!.azure/.gitignore
+!.azure/deployment-plan.md
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+data/
+demo-ids.local.json
+*.local.json
+*.tsbuildinfo
