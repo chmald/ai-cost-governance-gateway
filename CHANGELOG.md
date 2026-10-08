@@ -4,6 +4,63 @@ All notable changes to this project are documented here. Versions follow
 [Semantic Versioning](https://semver.org/); the project is pre-1.0, so minor
 versions may include breaking changes, which are called out explicitly.
 
+## [0.3.0] - 2026-10-08
+
+### Documentation
+
+- **Docs: rewrote for external audiences; removed internal terminology.** The
+  documentation now addresses readers directly and contains no internal
+  tooling or process references.
+- **New documentation layout** under `docs/` with a standard numbering:
+  `00-reproduce-this-demo`, `01-architecture`, `02-prerequisites`,
+  `03-deployment` (azd fast path), `03b-manual-deployment`, `04-testing`,
+  `05-troubleshooting`, `06-budgets-and-ledger`, `07-identity-and-security`,
+  `08-observability-and-token-metrics`, `09-mcp-governance`,
+  `10-api-reference`, `11-azd-integration-contract` and
+  `12-configuration-reference`. The previous `docs/API.md`, `AZD-CONTRACT.md`,
+  `BUDGETS.md`, `DEPLOYMENT.md`, `SECURITY.md`, `SOURCES.md` and `TESTING.md`,
+  and the operator references in `infra/README.md` and `infra/azd/README.md`,
+  were folded into the new pages without dropping content. README carries a
+  "Moved documents" table mapping every old location to its new one;
+  `infra/README.md` and `infra/azd/README.md` are now short folder guides.
+- **New content:** a one-page reproduce-this-demo orchestrator, a
+  troubleshooting guide keyed by the stable hook and API error codes, a
+  regions/cost/pre-flight prerequisites page, a configuration reference listing
+  every azd variable, output, manual parameter, runtime variable and recipe,
+  custom-metric cardinality guidance and a starting KQL query for chargeback.
+- **16 draw.io diagrams with PNG exports**, built from official Azure
+  Architecture Icons (V24) embedded in the files: reference architecture,
+  service catalog, budget admission flow (reserve → call → settle/hold),
+  identity flows (delegated user vs. app-only agent), token-metric telemetry,
+  MCP governance, azd deployment flow, azd release gate, manual deployment
+  steps, deployment profiles, configuration flow, API surface, testing matrix,
+  troubleshooting decision tree, prerequisites map and the offline demo story.
+- Local product icons (`docs/assets/icons/`, with attribution) and SVG status
+  badges (`docs/assets/badges/`); no external badge service.
+
+### Added
+
+- `scripts/lint_doc_visuals.py` (documentation visual lint; run with
+  `--strict`), `scripts/export_diagrams.py` (draw.io → PNG export and
+  `--check` for stale PNGs), `scripts/make_badges.py` (local SVG badges) and
+  `tests/test_doc_visuals.py`. CI gains a `docs` job that runs the strict lint.
+
+### Changed
+
+- `scripts/Test-AzdInfrastructure.ps1` reads the output contract from
+  `docs/11-azd-integration-contract.md`; `Deploy-Gateway.ps1` points to
+  `docs/03b-manual-deployment.md`.
+- Removed `.azure/deployment-plan.md` from version control; it was a local
+  tool artifact. `.azure/` is now fully gitignored.
+- Version 0.3.0. No application, policy or infrastructure behavior changed.
+
+### Verification
+
+- `npm ci`; `npm run typecheck`; `npm test` (API 75, portal 66, azd hooks 19);
+  loopback smoke; Bicep compilation; `Test-Infrastructure.ps1`;
+  `Test-AzdInfrastructure.ps1 -Restore`; `npm run validate:azd`;
+  `lint_doc_visuals.py --strict` (0 errors); diagram validation and
+  `export_diagrams.py --check` (0 stale). Still not live-deployed.
 ## [0.2.0] - 2026-10-07
 
 ### Added

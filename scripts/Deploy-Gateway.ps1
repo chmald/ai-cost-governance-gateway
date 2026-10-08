@@ -228,7 +228,7 @@ if ([string]::IsNullOrWhiteSpace($ResourceGroup) -or $ResourceGroup -match '[/\\
     throw 'An explicit existing resource group name is required.'
 }
 $parameters = Get-DeploymentParameters $template
-if (-not $PrerequisitesReviewed) { throw 'Review Checklist and infra\README.md, then supply -PrerequisitesReviewed.' }
+if (-not $PrerequisitesReviewed) { throw 'Review Checklist and docs\03b-manual-deployment.md, then supply -PrerequisitesReviewed.' }
 if ($Action -eq 'Deploy' -and -not $ApproveDeployment) {
     throw 'Deployment is disabled without the explicit -ApproveDeployment switch.'
 }

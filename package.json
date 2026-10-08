@@ -1,6 +1,6 @@
 {
   "name": "foundry-ai-gateway",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "license": "MIT",
   "description": "APIM-centered Foundry and MCP governance with prepaid team budgets",

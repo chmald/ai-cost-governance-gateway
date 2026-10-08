@@ -85,7 +85,7 @@ Assert-Condition ($mainText.Contains("scope: resourceGroup(foundryResourceGroup)
 Assert-Condition ($mainText.Contains("'../modules/foundry-access.bicep'")) 'Reuse the manual profile least-privilege Foundry module.'
 Assert-Condition ($foundationText.Contains("'../../modules/gateway.bicep'")) 'Reuse the existing gateway policies without modifying the manual profile.'
 
-$contract = Get-Content -LiteralPath (Join-Path $root 'docs\AZD-CONTRACT.md') -Raw
+$contract = Get-Content -LiteralPath (Join-Path $root 'docs\11-azd-integration-contract.md') -Raw
 $outputSection = [regex]::Match($contract, '(?s)## Shared infrastructure outputs(.*?)## Application database authentication').Groups[1].Value
 $requiredOutputs = @([regex]::Matches($outputSection, '`([A-Z][A-Z0-9_]+)`') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
 Assert-Condition ($requiredOutputs.Count -ge 25) 'Could not read the shared output contract.'

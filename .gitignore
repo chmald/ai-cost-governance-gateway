@@ -1,7 +1,6 @@
 .copilot-azure/
 .azure/*
 !.azure/.gitignore
-!.azure/deployment-plan.md
 node_modules/
 dist/
 coverage/
@@ -14,3 +13,5 @@ data/
 demo-ids.local.json
 *.local.json
 *.tsbuildinfo
+__pycache__/
+.pytest_cache/
