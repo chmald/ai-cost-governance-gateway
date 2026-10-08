@@ -1,5 +1,8 @@
 # AI Cost Governance Gateway
 
+> [!WARNING]
+> **For testing and demonstration purposes only.** This is a personal reference demo provided "as is" under the [MIT License](LICENSE), without warranty or support. It is not an official Microsoft product or sample, has not been through a production security review, and is not intended for production use. Review, test, and harden it before reusing any part of it, deploy only to non-production subscriptions, and never use real customer or personal data.
+
 Put **real-time budget caps** in front of Azure AI Foundry models and MCP tools.
 Every team and agent gets a USD budget that is checked *before* each model call,
 token usage is emitted as **chargeback metrics** per team, model and caller, and
@@ -198,3 +201,11 @@ For application updates, run `azd deploy gateway`; it uses the same migration
 gate. `azd down` is blocked until explicit ledger/data-deletion acknowledgement.
 The previous [manual deployment profile](infra/README.md) remains an advanced
 bring-your-own-resource fallback, not the normal getting-started path.
+
+## Disclaimer
+
+This project is provided for testing, learning, and demonstration purposes only. It is not an official Microsoft product, sample, or service, and it is not supported under any Microsoft support program. Azure services, APIs, and pricing referenced here change over time — validate against current Microsoft Learn documentation before relying on any detail. Deploying it creates billable Azure resources; you are responsible for their cost, security, and cleanup.
+
+## License
+
+Released under the [MIT License](LICENSE).
