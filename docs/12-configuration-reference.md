@@ -54,7 +54,9 @@ Every value you can set, in one place - so nobody has to read code to change a S
 | `AZURE_ENV_NAME` | (azd) | Environment name; resource group is `rg-<name>` |
 | `AZURE_SUBSCRIPTION_ID` | prompted | Target subscription; must belong to the tenant |
 | `AZURE_TENANT_ID` | required | Target tenant; always set it explicitly |
-| `AZURE_LOCATION` | prompted | Region for every new resource |
+| `AZURE_LOCATION` | prompted | Primary region for PostgreSQL, Foundry, ACR, identities and observability; APIM and Container Apps can override it independently |
+| `APIM_LOCATION` | `AZURE_LOCATION` | Optional APIM-only region override (for example `southcentralus`); leaves Container Apps, PostgreSQL, Foundry and observability in the primary region |
+| `CONTAINER_APPS_LOCATION` | `AZURE_LOCATION` | Optional application/environment/migration region override. A different region creates a dedicated `10.43.0.0/16` VNet peered privately to the primary `10.42.0.0/16` database VNet, with a PostgreSQL private DNS link |
 | `ENTRA_SETUP_MODE` | `auto` | `auto` creates/reuses owned registrations; `existing` only validates administrator-supplied ones |
 | `ENTRA_SPA_CLIENT_ID` | saved by setup | Portal SPA client ID (required input in `existing` mode) |
 | `ENTRA_API_AUDIENCE` | saved by setup | User API application GUID (v2 `aud`) |
@@ -67,10 +69,13 @@ Every value you can set, in one place - so nobody has to read code to change a S
 
 | Variable | Default | Effect |
 |---|---|---|
-| `FOUNDRY_RESOURCE_GROUP` | prompted | Existing Foundry account's resource group (same subscription) |
-| `FOUNDRY_ACCOUNT_NAME` | prompted | Existing OpenAI or AIServices account with a custom subdomain |
-| `FOUNDRY_ENDPOINT` | derived | Account-root HTTPS URL; validated against the account |
-| `FOUNDRY_NETWORK_REVIEWED` | unset | Set `true` only after designing connectivity to a network-restricted Foundry account |
+| `FOUNDRY_SETUP_MODE` | `reuse` | `reuse` validates an existing account; opt-in `create` provisions a dedicated AIServices S0 account/project in `rg-<AZURE_ENV_NAME>` |
+| `FOUNDRY_RESOURCE_GROUP` | prompted / derived | Reuse: existing account's group in this subscription. Create: always the new demo group; cannot be redirected |
+| `FOUNDRY_ACCOUNT_NAME` | prompted / derived | Reuse: existing OpenAI/AIServices account with custom subdomain. Create: setup copies the persisted deterministic name; do not set manually |
+| `FOUNDRY_CREATED_ACCOUNT_NAME` | saved once by setup | Create-only deterministic subscription/environment/region hash name; retained and validated on rerun; not an operator override |
+| `FOUNDRY_PROJECT_NAME` | `gateway-project` (create) | Dedicated project name; lowercase letters, digits and hyphens, 2-64 characters, starting with a letter. Empty output in reuse mode |
+| `FOUNDRY_ENDPOINT` | derived | Account-root HTTPS URL; validated against the account/custom domain; create uses `https://<account>.services.ai.azure.com/` |
+| `FOUNDRY_NETWORK_REVIEWED` | unset | Reuse only: set `true` after designing connectivity to a restricted account. Cannot override create-mode drift checks |
 | `APIM_PUBLISHER_NAME`, `APIM_PUBLISHER_EMAIL` | prompted | APIM publisher contact |
 | `APIM_SKU` | `Developer` | `Developer`, `BasicV2`, `StandardV2` or `PremiumV2` (`INVALID_SKU` otherwise); Developer has no production SLA |
 | `APIM_CAPACITY` | `1` | 1-10 units for non-Developer SKUs (Developer is always one) |
@@ -102,9 +107,12 @@ Each output of `infra/azd/main.bicep` lands in the azd environment under the sam
 | Output | Consumed by |
 |---|---|
 | `AZURE_RESOURCE_GROUP`, `AZURE_CONTAINER_APP_NAME`, `AZURE_CONTAINER_APPS_ENVIRONMENT_NAME`, `AZURE_CONTAINER_APPS_ENVIRONMENT_ID` | azd service deployment, hooks |
+| `AZURE_CONTAINER_APPS_LOCATION` | Resolved application/environment region for the Container App revision and migration job; output, not an operator override |
 | `AZURE_CONTAINER_REGISTRY_NAME`, `AZURE_CONTAINER_REGISTRY_ENDPOINT` | Remote build, release-gate registry check |
 | `SERVICE_GATEWAY_RESOURCE_ID`, `GATEWAY_URL` | `postdeploy` verification, SPA redirect |
 | `APIM_SERVICE_NAME`, `APIM_RESOURCE_GROUP`, `APIM_GATEWAY_URL`, `APIM_PRINCIPAL_ID` | App settings; `Gateway.Invoke` assignment |
+| `FOUNDRY_RESOURCE_GROUP`, `FOUNDRY_ACCOUNT_NAME`, `FOUNDRY_ENDPOINT` | Gateway revision; same coordinates validated/saved by prepare |
+| `FOUNDRY_PROJECT_NAME`, `FOUNDRY_PROJECT_ENDPOINT` | Operators; dedicated project coordinates in create mode, empty in reuse; inference still uses the account-root endpoint |
 | `AZURE_CLIENT_ID`, `RUNTIME_IDENTITY_ID`, `RUNTIME_PRINCIPAL_ID` | Runtime identity in the revision; database role mapping |
 | `MIGRATION_IDENTITY_ID`, `MIGRATION_CLIENT_ID`, `MIGRATION_PRINCIPAL_ID`, `MIGRATION_PRINCIPAL_NAME`, `MIGRATION_JOB_NAME` | Migration job |
 | `POSTGRES_HOST`, `POSTGRES_DATABASE`, `POSTGRES_APP_ROLE`, `DATABASE_URL`, `DATABASE_AUTH` | Runtime and migration job |
@@ -147,7 +155,7 @@ Read by `apps/api/src/config.ts`. In `azure` mode every Entra/Azure value is req
 | `DATABASE_AUTH` | `password` | `entra` uses the managed identity per connection (azd); requires `AZURE_CLIENT_ID` |
 | `AZURE_TENANT_ID`, `ENTRA_SPA_CLIENT_ID`, `ENTRA_API_AUDIENCE`, `ENTRA_API_SCOPE` | - | User token validation and portal sign-in |
 | `GATEWAY_API_AUDIENCE`, `APIM_PRINCIPAL_ID` | - | APIM proof validation (audiences must differ) |
-| `AZURE_SUBSCRIPTION_ID`, `FOUNDRY_RESOURCE_GROUP`, `FOUNDRY_ACCOUNT_NAME`, `FOUNDRY_ENDPOINT` | - | Existing Foundry account (account-root HTTPS URL) |
+| `AZURE_SUBSCRIPTION_ID`, `FOUNDRY_RESOURCE_GROUP`, `FOUNDRY_ACCOUNT_NAME`, `FOUNDRY_ENDPOINT` | - | Configured reused or dedicated Foundry account (account-root HTTPS URL) |
 | `APIM_RESOURCE_GROUP`, `APIM_SERVICE_NAME`, `APIM_GATEWAY_URL` | - | APIM coordinates (`APIM_GATEWAY_URL` is the origin, no API path) |
 | `AZURE_CLIENT_ID` | - | User-assigned identity for ARM/Foundry; required with `DATABASE_AUTH=entra` |
 | `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_AUDIENCES` | empty | Fail-closed external MCP allowlists |
@@ -171,7 +179,10 @@ App-only callers need **no** extra runtime setting: assign them `Gateway.Agent` 
 
 | Goal | Change |
 |---|---|
+| Dedicated demo Foundry | In a fresh `ai-gateway` environment set `FOUNDRY_SETUP_MODE create`, `AZURE_LOCATION eastus2` (only after subscription eligibility approval), tenant/subscription and APIM contact; group is `rg-ai-gateway`. No initial model; deploy and price it in the gateway portal |
 | Production-like APIM | `azd env set APIM_SKU StandardV2` (or `PremiumV2`) and `azd env set APIM_CAPACITY <n>`, then `azd provision` |
+| APIM in another region | `azd env set APIM_LOCATION southcentralus`, then `azd provision`; verify SKU availability and accept cross-region latency/egress |
+| Container Apps in another region, retain the database | `azd env set CONTAINER_APPS_LOCATION southcentralus`, then `azd up`; retain `AZURE_LOCATION` and review private VNet peering, subnet overlap, cross-region latency and transfer costs |
 | Bigger database | `azd env set POSTGRES_TIER GeneralPurpose`, `azd env set POSTGRES_SKU <sku>`, `azd env set POSTGRES_STORAGE_SIZE_GB <n>` - check regional availability first |
 | Scale the app | `azd env set GATEWAY_MIN_REPLICAS 2`, `azd env set GATEWAY_MAX_REPLICAS 10`, then `azd deploy gateway` |
 | Throttle token bursts | `azd env set LLM_TOKENS_PER_MINUTE_PER_CALLER 20000`, then `azd provision` |

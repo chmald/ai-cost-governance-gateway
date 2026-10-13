@@ -27,7 +27,7 @@
 
 Put **real-time budget caps** in front of Microsoft Foundry models and MCP tools. Every team and agent gets a USD budget that is checked *before* each model call, token usage is emitted as **chargeback metrics** per team, model and caller, and MCP traffic flows through a **governed gateway** instead of directly to tools.
 
-Under the hood it is a focused management portal and governance API with **Azure API Management (APIM) as the AI and MCP gateway**. Manage deployments in an existing Foundry account, assign team access, and admit inference requests only when a conservative maximum charge fits the team's remaining budget. It is for platform engineers, architects and FinOps teams who need to show - and then adapt - how model spend stays inside agreed budgets.
+Under the hood it is a focused management portal and governance API with **Azure API Management (APIM) as the AI and MCP gateway**. Manage deployments in a reused or dedicated Foundry account, assign team access, and admit inference requests only when a conservative maximum charge fits the team's remaining budget. It is for platform engineers, architects and FinOps teams who need to show - and then adapt - how model spend stays inside agreed budgets.
 
 > [!NOTE]
 > **Status: locally validated** (typecheck, unit/integration tests, offline loopback demo), **not yet live-deployed** to Azure. Treat the infrastructure templates as a reviewed starting point, not a production-proven deployment. Subscription, region, permissions and cost approval remain operator decisions.
@@ -78,7 +78,7 @@ The portal is a control plane, not a place to paste subscription keys. The infer
     <td align="center" width="25%"><img src="./docs/assets/icons/api-management.svg" width="48" alt="API Management"><br><b>API Management</b><br><sub>AI + MCP gateway: token validation, rate limits, token metrics, APIM proof.</sub></td>
     <td align="center" width="25%"><img src="./docs/assets/icons/container-apps.svg" width="48" alt="Container Apps"><br><b>Container Apps</b><br><sub>Portal + governance API; gated migration job.</sub></td>
     <td align="center" width="25%"><img src="./docs/assets/icons/postgresql.svg" width="48" alt="Azure Database for PostgreSQL"><br><b>PostgreSQL</b><br><sub>USD-microdollar ledger and audit; private and Entra-only (azd).</sub></td>
-    <td align="center" width="25%"><img src="./docs/assets/icons/foundry.svg" width="48" alt="Microsoft Foundry"><br><b>Microsoft Foundry</b><br><sub>Existing account and on-demand chat deployments, reused.</sub></td>
+    <td align="center" width="25%"><img src="./docs/assets/icons/foundry.svg" width="48" alt="Microsoft Foundry"><br><b>Microsoft Foundry</b><br><sub>Reused by default; opt-in dedicated account/project. Portal-managed chat deployments.</sub></td>
   </tr>
   <tr>
     <td align="center"><img src="./docs/assets/icons/entra-id.svg" width="48" alt="Microsoft Entra ID"><br><b>Microsoft Entra ID</b><br><sub>SPA, user API and proof API; five gateway roles.</sub></td>
@@ -99,7 +99,7 @@ The portal is a control plane, not a place to paste subscription keys. The infer
 | | Path | Needs | What it proves | Recommendation |
 |---|---|---|---|---|
 | <img src="./docs/assets/icons/dev-console.svg" width="20" alt=""> | **Offline loopback demo** <img src="./docs/assets/badges/offline-demo.svg" alt="Offline demo"> | Node.js 24 | Admission, settlement, agent attribution, refusal - with simulated replies | **Start here** to understand and present the pattern |
-| <img src="./docs/assets/icons/azure-devops.svg" width="20" alt=""> | **`azd up`** <img src="./docs/assets/badges/azd-up.svg" alt="azd up"> | Subscription, existing Foundry, Entra rights, cost approval | The full Azure deployment with a gated release | **Use for Azure** - the normal deployment path |
+| <img src="./docs/assets/icons/azure-devops.svg" width="20" alt=""> | **`azd up`** <img src="./docs/assets/badges/azd-up.svg" alt="azd up"> | Subscription, reused or dedicated Foundry, Entra rights, cost approval | The full Azure deployment with a gated release | **Use for Azure** - the normal deployment path |
 | <img src="./docs/assets/icons/powershell.svg" width="20" alt=""> | **Manual profile** <img src="./docs/assets/badges/manual-path.svg" alt="Manual path"> | Your PostgreSQL, ACR and Entra registrations | Same app and policies on resources you own | Only when policy requires bring-your-own resources |
 
 ## Quick start
@@ -135,7 +135,7 @@ The built application is served by the API at `http://127.0.0.1:3001`. See `.env
 
 ### Deploy with azd
 
-Requires Node.js 24, PowerShell 7, Azure Developer CLI 1.30+ (major version 1), Bicep CLI, an existing Foundry account, and the Azure/Entra permissions in [02 - Prerequisites](./docs/02-prerequisites.md).
+Requires Node.js 24, PowerShell 7, Azure Developer CLI 1.30+ (major version 1), Bicep CLI, an existing Foundry account or opt-in creation, and the Azure/Entra permissions in [02 - Prerequisites](./docs/02-prerequisites.md).
 
 > [!WARNING]
 > Sign in to the **intended** tenant explicitly; never rely on whichever account `azd` or `az` used last. The two CLIs keep separate logins, and the hooks stop on a tenant/subscription mismatch.
@@ -165,7 +165,9 @@ az account show --query "{tenant:tenantId, subscription:id}" -o table
 
 </details>
 
-Setup asks for missing subscription/region, existing Foundry resource group and account, and APIM publisher contact. Supporting infrastructure, registration setup, image build, database bootstrap/migration and app release are automated. If tenant policy blocks Entra changes, setup stops with administrator actions; it never weakens authentication to continue. **Defaults are for evaluation:** APIM Developer and a Burstable PostgreSQL server. Foundry is reused, not recreated. ACR build workers must reach the public npm registry (or the mirror passed as a build argument).
+Setup asks for missing subscription/region, existing Foundry resource group and account (default `FOUNDRY_SETUP_MODE=reuse`), and APIM publisher contact. For a fresh dedicated demo, set `FOUNDRY_SETUP_MODE=create` before `azd up`: Bicep creates an Entra-only AIServices S0 account and project in `rg-<environment>`, with public HTTPS for ACA egress. No model is provisioned; the gateway portal manages model deployments and pricing. Use environment `ai-gateway` for `rg-ai-gateway`; see the [dedicated demo command block](./docs/03-deployment.md#dedicated-foundry-demo-opt-in). No hosted agents or Foundry AI Gateway preview tier are added.
+
+Supporting infrastructure, registration setup, image build, database bootstrap/migration and app release are automated. If tenant policy blocks Entra changes, setup stops with administrator actions; it never weakens authentication to continue. **Defaults are for evaluation:** APIM Developer and a Burstable PostgreSQL server. Reuse mode never rewrites existing Foundry networking. ACR build workers must reach the public npm registry (or the mirror passed as a build argument).
 
 For application updates, run `azd deploy gateway`; it uses the same migration gate. `azd down` is blocked until explicit ledger/data-deletion acknowledgement. Enable an agent with [07 - Identity and security](./docs/07-identity-and-security.md#enable-an-app-only-caller) and set up [chargeback views](./docs/08-observability-and-token-metrics.md#querying-chargeback-data).
 

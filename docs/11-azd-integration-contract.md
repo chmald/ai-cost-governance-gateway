@@ -46,7 +46,7 @@ Ordering was verified in azd 1.30.0's `service_manager.go`: Publish completes be
 
 | Step | | Stage | What it does |
 |---|---|---|---|
-| **1** | <img src="./assets/icons/app-registrations.svg" width="28" alt=""> | `preup` | Verifies tools, selected tenant/subscription/region and existing Foundry inputs, then creates or validates owned Entra registrations. `preprovision` repeats read-only validation; provision hooks never create or change Entra registrations. |
+| **1** | <img src="./assets/icons/app-registrations.svg" width="28" alt=""> | `preup` | Verifies tools, selected tenant/subscription/region and Foundry reuse/create inputs, then creates or validates owned Entra registrations. `preprovision` repeats read-only validation; provision hooks never create or change Entra registrations or Foundry resources. |
 | **2** | <img src="./assets/icons/resource-group.svg" width="28" alt=""> | provision | Creates a resource group, ACR, APIM, Container Apps environment, private PostgreSQL 17/network/DNS, Log Analytics, workspace-based Application Insights with an APIM managed-identity logger and inference diagnostics (LLM token metrics), runtime and migration identities, and narrowly scoped role assignments. No application placeholder is published. |
 | **3** | <img src="./assets/icons/container-registry.svg" width="28" alt=""> | package + publish | azd builds and publishes the application remotely through ACR using the existing Dockerfile and the public npm registry (or a build-argument mirror). |
 | **4** | <img src="./assets/icons/entra-roles.svg" width="28" alt=""> | service `predeploy` | Configures APIM's `Gateway.Invoke` application-role assignment and the SPA redirect URI, idempotently and failure-closed. |
@@ -71,19 +71,30 @@ The migration template's exact ARM parameter contract is `environmentName`, `loc
 
 ## Environment inputs
 
-Subscription, tenant and location are **operator-selected at actual deployment**; this profile never infers a usable subscription from an existing CLI login. Foundry inputs refer to an existing account **in that same subscription**. The account must be reachable from the app; this profile does not change its firewall, private endpoints, deployed models or DNS.
+Subscription, tenant and location are **operator-selected at actual deployment**; this profile never infers a usable subscription from an existing CLI login. Default `FOUNDRY_SETUP_MODE=reuse` refers to an existing account **in that same subscription**. The account must be reachable from the app; reuse does not change its firewall, private endpoints, deployed models or DNS.
+
+Opt-in `create` adds only a dedicated AIServices S0 account and project through `modules/foundry.bicep`, scoped to the new demo group/location. The account has a system identity, `allowProjectManagement: true`, `disableLocalAuth: true`, and public network access with an Allow ACL for isolated ACA HTTPS egress. The project has its own system identity but receives no extra Contributor or hosted-agent grants. No model deployments, hosted-agent capabilities, private Foundry routing, or AI Gateway preview tier are provisioned.
+
+Prepare derives `gateway-foundry-<20 hex>` from SHA-256 of the lowercased subscription ID, environment name and region joined with `:`. It persists `FOUNDRY_CREATED_ACCOUNT_NAME` once, validates it on rerun, and saves the same `FOUNDRY_ACCOUNT_NAME`, `FOUNDRY_RESOURCE_GROUP` and account-root `FOUNDRY_ENDPOINT` consumed by provision and revision. Create refuses target redirection or adoption of account/project resources without matching environment/application tags and location. Only 404 means not yet provisioned; permissions and drift failures stop before Entra changes. Both preup and preprovision can validate an absent account without creating it. `foundry-access.bicep` retains its existing permissions and depends on the conditional Foundry deployment and foundation runtime identity.
 
 | Group | Values | Notes |
 |---|---|---|
 | Required at deployment | `AZURE_ENV_NAME`, `AZURE_SUBSCRIPTION_ID`, `AZURE_LOCATION`, `AZURE_TENANT_ID` | Tenant ↔ subscription is verified (`TENANT_MISMATCH`) |
 | Existing Foundry | `FOUNDRY_RESOURCE_GROUP`, `FOUNDRY_ACCOUNT_NAME`, `FOUNDRY_ENDPOINT` | Endpoint derived from the account and checked (`FOUNDRY_ENDPOINT_MISMATCH`) |
+| Dedicated Foundry opt-in | `FOUNDRY_SETUP_MODE=create`, optional `FOUNDRY_PROJECT_NAME` | Setup derives/saves account/group/endpoint and `FOUNDRY_CREATED_ACCOUNT_NAME`; Bicep creates the resources |
 | APIM publisher | `APIM_PUBLISHER_NAME`, `APIM_PUBLISHER_EMAIL` | Setup may prompt or require explicit values |
+| APIM region override | `APIM_LOCATION` | Optional; unset/empty uses `AZURE_LOCATION`. Changes only APIM, not the primary resource group or application/database/Foundry region |
+| Container Apps region override | `CONTAINER_APPS_LOCATION` | Optional; unset/empty uses `AZURE_LOCATION`. Moves only the environment/application/migration; private PostgreSQL, Foundry and primary resource group remain unchanged |
 | Created or validated by setup | `ENTRA_SPA_CLIENT_ID`, `ENTRA_API_AUDIENCE`, `ENTRA_API_SCOPE`, `GATEWAY_API_AUDIENCE` | User and proof API audiences must remain distinct |
 | Saved for safe resume | Graph application/object IDs, `GATEWAY_AGENT_ROLE_ID` | Nonsecret; access tokens are never persisted |
 
-`FOUNDRY_ENDPOINT` and `ENTRA_SPA_CLIENT_ID`/`ENTRA_API_SCOPE` are passed to the release, not used to create new Foundry or Graph resources. Setup also saves `GATEWAY_AGENT_ROLE_ID` (the user API's Application-only `Gateway.Agent` app role) when that role exists. It is never assigned automatically; operators assign it per app-only caller.
+`FOUNDRY_ENDPOINT` and `ENTRA_SPA_CLIENT_ID`/`ENTRA_API_SCOPE` are passed to the release; the endpoint is never a project API URL. Setup also saves `GATEWAY_AGENT_ROLE_ID` (the user API's Application-only `Gateway.Agent` app role) when that role exists. It is never assigned automatically; operators assign it per app-only caller.
 
-Optional development defaults are explicit, validated, and documented: APIM Developer (evaluation, no production SLA), PostgreSQL Burstable, empty external MCP allowlists, `LLM_TOKENS_PER_MINUTE_PER_CALLER=0` (optional `llm-token-limit` off). Foundry remains an existing account. Every optional value with its default is listed in [12 - Configuration reference](./12-configuration-reference.md#azd-environment-variables).
+Optional development defaults are explicit, validated, and documented: APIM Developer (evaluation, no production SLA), PostgreSQL Burstable, empty external MCP allowlists, `LLM_TOKENS_PER_MINUTE_PER_CALLER=0` (optional `llm-token-limit` off), Foundry reuse. Models and pricing are managed in the gateway portal, not provisioned by the azd foundation. Every optional value with its default is listed in [12 - Configuration reference](./12-configuration-reference.md#azd-environment-variables).
+
+`modules/apim.bicep` owns APIM creation and exposes its name, gateway URL and system-assigned principal ID. Foundation policy, registrar and observability deployments depend on that module; the existing shared output names and release identity wiring are unchanged. If APIM uses the primary region, its original deterministic name is preserved. A different region derives a separate name from the subscription/environment/APIM region, avoiding an invalid in-place location update. Incremental provisioning retains any previous APIM service; replacement verification and explicit cleanup are operator responsibilities.
+
+For a different Container Apps region, conditional `modules/container-apps-network.bicep` creates a non-overlapping `10.43.0.0/16` application VNet, peers both directions to the primary database VNet, and links the PostgreSQL private DNS zone. Peerings allow direct virtual network access only, not forwarded traffic or gateway transit. PostgreSQL NSG ingress remains restricted to TCP 5432 from the selected application's `/23` subnet. Same-region defaults preserve the original environment name, shared VNet and DNS link. The new environment depends on completed peering/DNS module deployment. `AZURE_CONTAINER_APPS_LOCATION` is the resolved provision output consumed by the application and migration templates; the migration hook uses it, with the original primary-region fallback for older environments.
 
 ## Shared infrastructure outputs
 
@@ -96,11 +107,14 @@ Use these exact names or coordinate a change before consumers are written. The o
 | `AZURE_CONTAINER_REGISTRY_ENDPOINT` | ACR login server |
 | `AZURE_CONTAINER_APPS_ENVIRONMENT_NAME` | ACA environment name |
 | `AZURE_CONTAINER_APPS_ENVIRONMENT_ID` | ACA environment resource ID |
+| `AZURE_CONTAINER_APPS_LOCATION` | Resolved Container Apps region; application and migration job location, independently of PostgreSQL |
 | `AZURE_CONTAINER_APP_NAME` | Deterministic gateway app name |
 | `SERVICE_GATEWAY_RESOURCE_ID` | Gateway resource ID, even before first release |
 | `GATEWAY_URL` | Expected application HTTPS URL using environment default domain |
 | `APIM_SERVICE_NAME`, `APIM_RESOURCE_GROUP`, `APIM_GATEWAY_URL` | APIM coordinates |
 | `APIM_PRINCIPAL_ID` | APIM system-assigned identity object ID |
+| `FOUNDRY_RESOURCE_GROUP`, `FOUNDRY_ACCOUNT_NAME`, `FOUNDRY_ENDPOINT` | Same verified account coordinates used by prepare and gateway revision |
+| `FOUNDRY_PROJECT_NAME`, `FOUNDRY_PROJECT_ENDPOINT` | Created project name and HTTPS project endpoint; empty in reuse mode; not used for inference |
 | `AZURE_CLIENT_ID` | Runtime UAMI client ID |
 | `RUNTIME_IDENTITY_ID`, `RUNTIME_PRINCIPAL_ID` | Runtime identity resource/object ID |
 | `MIGRATION_IDENTITY_ID`, `MIGRATION_CLIENT_ID` | Migration UAMI resource/client ID |
@@ -143,7 +157,7 @@ The new VNet uses `10.42.0.0/16`, with an ACA-delegated `10.42.0.0/23` subnet an
 
 ACR, APIM and ACA HTTPS ingress are public to support remote build, browser and APIM access; only database connectivity is private. Public ACA ingress does not bypass the application's user-token and APIM-proof authorization checks.
 
-The existing Foundry module grants runtime account-scoped inference and a custom deployment read/write role, not account creation/deletion or key reads. The APIM runtime role permits only API registration/read/policy operations. APIM's own system identity acquires the separate proof-API token; the Entra `Gateway.Invoke` app-role assignment is performed by setup, **not Bicep**. No runtime identity receives Graph permissions.
+The shared Foundry access module grants runtime account-scoped inference and a custom deployment read/write role in both modes, not account creation/deletion or key reads. The APIM runtime role permits only API registration/read/policy operations. APIM's own system identity acquires the separate proof-API token; the Entra `Gateway.Invoke` app-role assignment is performed by setup, **not Bicep**. No runtime identity receives Graph permissions.
 
 PostgreSQL has seven-day local backups, no zone HA, no geo-redundant backup and no automatic storage growth. The replica environment values are bounded string parameters converted with `int()` inside the service template: azd 1.30.0's revision helper substitutes JSON strings directly, unlike the foundation provisioning parameter pipeline.
 

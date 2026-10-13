@@ -5,6 +5,8 @@ param name string
 @maxLength(13)
 param resourceToken string
 param location string
+param apimLocation string = location
+param containerAppsLocation string = location
 param tags object
 param azureTenantId string
 param publisherName string
@@ -17,6 +19,10 @@ param postgresTier string
 param postgresSku string
 param postgresStorageSizeGB int
 param llmTokensPerMinutePerCaller int = 0
+
+var crossRegionContainerApps = containerAppsLocation != location
+var containerAppsToken = crossRegionContainerApps ? uniqueString(subscription().id, tags['azd-env-name'], containerAppsLocation) : resourceToken
+var containerAppsSubnetPrefix = crossRegionContainerApps ? '10.43.0.0/23' : '10.42.0.0/23'
 
 module runtimeIdentity 'br/public:avm/res/managed-identity/user-assigned-identity:0.6.0' = {
   name: 'runtime-identity'
@@ -83,7 +89,7 @@ resource postgresNsg 'Microsoft.Network/networkSecurityGroups@2025-05-01' = {
           direction: 'Inbound'
           access: 'Allow'
           protocol: 'Tcp'
-          sourceAddressPrefix: '10.42.0.0/23'
+          sourceAddressPrefix: containerAppsSubnetPrefix
           sourcePortRange: '*'
           destinationAddressPrefix: '10.42.2.0/24'
           destinationPortRange: '5432'
@@ -192,6 +198,17 @@ resource postgresDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@
   }
 }
 
+module containerAppsNetwork 'container-apps-network.bicep' = if (crossRegionContainerApps) {
+  name: 'gateway-container-apps-network'
+  params: {
+    name: 'gateway-${containerAppsToken}-network'
+    location: containerAppsLocation
+    tags: tags
+    postgresNetworkName: network.name
+    postgresDnsZoneName: postgresDns.name
+  }
+}
+
 resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2025-08-01' = {
   name: 'pg-${resourceToken}'
   location: location
@@ -269,8 +286,8 @@ resource logs 'Microsoft.OperationalInsights/workspaces@2025-02-01' = {
 }
 
 resource environment 'Microsoft.App/managedEnvironments@2025-01-01' = {
-  name: '${name}-environment'
-  location: location
+  name: 'gateway-${containerAppsToken}-environment'
+  location: containerAppsLocation
   tags: tags
   properties: {
     appLogsConfiguration: {
@@ -288,34 +305,29 @@ resource environment 'Microsoft.App/managedEnvironments@2025-01-01' = {
     ]
     zoneRedundant: false
     vnetConfiguration: {
-      infrastructureSubnetId: '${network.id}/subnets/container-apps'
+      infrastructureSubnetId: crossRegionContainerApps ? containerAppsNetwork!.outputs.subnetId : '${network.id}/subnets/container-apps'
       internal: false
     }
   }
 }
 
-resource apim 'Microsoft.ApiManagement/service@2024-05-01' = {
-  name: 'apim-${resourceToken}'
-  location: location
-  tags: tags
-  sku: {
-    name: apimSku
+var apimResourceToken = apimLocation == location ? resourceToken : uniqueString(subscription().id, tags['azd-env-name'], apimLocation)
+
+module apimService 'apim.bicep' = {
+  name: 'gateway-apim'
+  params: {
+    name: 'apim-${apimResourceToken}'
+    location: apimLocation
+    tags: tags
+    sku: apimSku
     capacity: apimCapacity
-  }
-  identity: {
-    type: 'SystemAssigned'
-  }
-  properties: {
     publisherName: publisherName
     publisherEmail: publisherEmail
-    publicNetworkAccess: 'Enabled'
-    virtualNetworkType: 'None'
-    customProperties: apimSku == 'Developer' ? {
-      'Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Protocols.Tls10': 'False'
-      'Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Protocols.Tls11': 'False'
-      'Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Protocols.Ssl30': 'False'
-    } : {}
   }
+}
+
+resource apim 'Microsoft.ApiManagement/service@2024-05-01' existing = {
+  name: 'apim-${apimResourceToken}'
 }
 
 resource apiRegistrar 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
@@ -354,6 +366,9 @@ resource apiRegistrarAssignment 'Microsoft.Authorization/roleAssignments@2022-04
     principalType: 'ServicePrincipal'
     roleDefinitionId: apiRegistrar.id
   }
+  dependsOn: [
+    apimService
+  ]
 }
 
 var expectedGatewayUrl = 'https://${name}.${environment.properties.defaultDomain}'
@@ -365,14 +380,14 @@ module observability '../../modules/observability.bicep' = {
     location: location
     tags: tags
     logAnalyticsWorkspaceId: logs.id
-    apimServiceName: apim.name
+    apimServiceName: apimService.outputs.name
   }
 }
 
 module gatewayPolicies '../../modules/gateway.bicep' = {
   name: 'gateway-policies'
   params: {
-    apimServiceName: apim.name
+    apimServiceName: apimService.outputs.name
     appBackendUrl: expectedGatewayUrl
     azureTenantId: azureTenantId
     entraApiAudience: entraApiAudience
@@ -387,9 +402,9 @@ output registryEndpoint string = registry.outputs.loginServer
 output environmentName string = environment.name
 output environmentId string = environment.id
 output gatewayUrl string = expectedGatewayUrl
-output apimName string = apim.name
-output apimGatewayUrl string = apim.properties.gatewayUrl
-output apimPrincipalId string = apim.identity.principalId
+output apimName string = apimService.outputs.name
+output apimGatewayUrl string = apimService.outputs.gatewayUrl
+output apimPrincipalId string = apimService.outputs.principalId
 output runtimeIdentityId string = runtimeIdentity.outputs.resourceId
 output runtimeClientId string = runtimeIdentity.outputs.clientId
 output runtimePrincipalId string = runtimeIdentity.outputs.principalId

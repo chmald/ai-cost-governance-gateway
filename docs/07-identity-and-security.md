@@ -152,7 +152,7 @@ Existing mode validates rather than modifies registrations/assignments. An admin
 
 ## Managed identities and Azure RBAC
 
-The application uses managed identity for Azure operations. Production must not depend on a developer's Azure CLI login, pasted bearer tokens, or model API keys. Grants are scoped to the existing Foundry account and APIM service.
+The application uses managed identity for Azure operations. Production must not depend on a developer's Azure CLI login, pasted bearer tokens, or model API keys. Grants are scoped to the configured Foundry account (reused or dedicated) and APIM service.
 
 | Identity | Product | Grants | Never has |
 |---|---|---|---|
@@ -166,11 +166,13 @@ APIM gets **no Foundry RBAC assignment**. Its tokens target the app proof API or
 
 Protect the existing Foundry account independently. Remove unnecessary inference RBAC assignments, disable local key authentication where supported, and use private connectivity/firewall policies. The templates do not silently rewrite networking on an existing resource.
 
+Opt-in dedicated creation starts with local keys disabled and public HTTPS access for the isolated ACA network. Its project system identity receives no broad Contributor/inference roles. This is not private-model isolation: review other principals and routes before production. No hosted agents or Foundry AI Gateway preview tier are added.
+
 | Control | azd profile | Manual profile | You still own |
 |---|---|---|---|
 | PostgreSQL | Private, Entra-only, no firewall rules, `publicNetworkAccess: Disabled`, NSG accepts 5432 only from ACA and its own subnet | Your server; `sslmode=verify-full`; least-privilege principal | Backups, restore drills, capacity |
 | Portal/API ingress | Public HTTPS, Entra-authorized | Public HTTPS, Entra-authorized | Private ingress, edge protection, abuse limits |
-| Foundry | Reused; firewall never opened (`FOUNDRY_NETWORK_RESTRICTED` stops setup) | Reused | Private endpoints/DNS, disable local keys, remove other inference principals |
+| Foundry | Default reuse: firewall never opened (`FOUNDRY_NETWORK_RESTRICTED` stops setup). Opt-in create: dedicated S0 account/project, Entra-only, public HTTPS | Reused | Private endpoints/DNS, disable local keys on reused accounts, remove other inference principals |
 | ACR | Admin and anonymous access off, `AcrPull` only | Existing registry, registry-RBAC mode | Repository-ABAC adjustments |
 
 Use production PostgreSQL with `sslmode=verify-full` and an application-specific least-privilege database principal. The runtime needs data access; migrations may need a separate elevated principal. Do not allow all Azure addresses solely to make deployment convenient. Database topology and connectivity are deployment prerequisites, not assumed secure because a connection string works.

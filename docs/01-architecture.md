@@ -20,7 +20,7 @@
   <img src="./assets/badges/not-live-deployed.svg" alt="Azure deploy: not yet live-deployed">
 </p>
 
-How the AI Cost Governance Gateway is put together and why. **Azure API Management** is the single AI and MCP gateway; a small **governance API** (with a React portal) owns a durable USD-microdollar **ledger** in PostgreSQL and admits each model call only when its conservative maximum charge fits the team's remaining budget; **Application Insights** receives per-team token metrics for chargeback; existing **Microsoft Foundry** deployments are reused. This page is for architects reviewing the design and for teams adapting it; it can be shared on its own.
+How the AI Cost Governance Gateway is put together and why. **Azure API Management** is the single AI and MCP gateway; a small **governance API** (with a React portal) owns a durable USD-microdollar **ledger** in PostgreSQL and admits each model call only when its conservative maximum charge fits the team's remaining budget; **Application Insights** receives per-team token metrics for chargeback; **Microsoft Foundry** is reused by default or created as a dedicated account/project on opt-in. This page is for architects reviewing the design and for teams adapting it; it can be shared on its own.
 
 ## At a glance
 
@@ -30,7 +30,7 @@ How the AI Cost Governance Gateway is put together and why. **Azure API Manageme
 | <img src="./assets/icons/api-management.svg" width="24" alt=""> | Gateway | API Management | Token validation, rate limits, token metrics, MCP servers, APIM identity proof |
 | <img src="./assets/icons/container-apps.svg" width="24" alt=""> | Application | Container Apps | Portal + governance API; atomic budget admission; Foundry deployment management |
 | <img src="./assets/icons/postgresql.svg" width="24" alt=""> | Data | Azure Database for PostgreSQL | Ledger, teams, models, audit - private and Entra-only in the azd profile |
-| <img src="./assets/icons/foundry.svg" width="24" alt=""> | Models + tools | Microsoft Foundry | Existing account and on-demand chat deployments; optional external MCP servers |
+| <img src="./assets/icons/foundry.svg" width="24" alt=""> | Models + tools | Microsoft Foundry | Reused or dedicated account, portal-managed on-demand chat deployments; optional external MCP servers |
 | <img src="./assets/icons/application-insights.svg" width="24" alt=""> | Operations | Application Insights + Log Analytics | Token metrics for chargeback; ACR + azd for supply chain and release |
 
 > [!IMPORTANT]
@@ -55,7 +55,7 @@ How the AI Cost Governance Gateway is put together and why. **Azure API Manageme
 | Application | <img src="./assets/icons/container-apps-environment.svg" width="20" alt=""> Migration job (azd) | Container Apps | `bootstrap.js`; release gated on its success |
 | Data | <img src="./assets/icons/postgresql.svg" width="20" alt=""> Ledger database | Azure Database for PostgreSQL | v17, private, Entra-only (azd); your server (manual) |
 | Data | <img src="./assets/icons/virtual-network.svg" width="20" alt=""> VNet + private DNS (azd) | Virtual Network / Azure DNS | `10.42.0.0/16`, ACA and PostgreSQL delegated subnets |
-| Models | <img src="./assets/icons/foundry.svg" width="20" alt=""> Foundry account | Microsoft Foundry | Existing; reused, never created |
+| Models | <img src="./assets/icons/foundry.svg" width="20" alt=""> Foundry account | Microsoft Foundry | Reused by default; azd opt-in `create` adds Entra-only AIServices S0 account/project in the demo group, no initial model or hosted agents |
 | Models | <img src="./assets/icons/foundry-models.svg" width="20" alt=""> Model deployments | Foundry Models | On-demand text Chat Completions |
 | Operations | <img src="./assets/icons/application-insights.svg" width="20" alt=""> Application Insights | Azure Monitor | `ai-gateway` token metrics, workspace-based, Entra-only ingestion |
 | Operations | <img src="./assets/icons/log-analytics.svg" width="20" alt=""> Log Analytics | Azure Monitor | Workspace for metrics and logs |

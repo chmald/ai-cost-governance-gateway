@@ -135,10 +135,10 @@ The call is charged to `demo-engineering` (which registers the fake agent) and a
 
 ## Part C - Prepare the Azure target
 
-Work through [02 - Prerequisites](./02-prerequisites.md) and its pre-flight checklist: tools, the existing Foundry account, Azure RBAC, Entra rights (or an administrator handoff), network reachability, region and cost approval.
+Work through [02 - Prerequisites](./02-prerequisites.md) and its pre-flight checklist: tools, Foundry reuse or dedicated creation, Azure RBAC, Entra rights (or an administrator handoff), network reachability, region and cost approval.
 
 - [ ] Tenant and subscription IDs known; region verified; cost approved
-- [ ] Existing Foundry account and on-demand chat deployments identified, with verified prices and limits
+- [ ] Foundry mode chosen: existing account, or [dedicated creation](./03-deployment.md#dedicated-foundry-demo-opt-in); on-demand chat models planned with verified prices/limits (create mode starts with none)
 - [ ] Entra mode chosen: `auto` (you may manage registrations) or `existing` (administrator-supplied)
 
 > [!WARNING]

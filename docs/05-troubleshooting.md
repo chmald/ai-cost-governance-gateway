@@ -47,9 +47,15 @@ Symptom → owning product → fix. Every setup hook and API error carries a **s
 | `SUBSCRIPTION_UNAVAILABLE` | Tenant-level login only, or disabled subscription | Select a real, enabled subscription |
 | `LOGIN_REQUIRED` | azd not signed in | `azd auth login --tenant-id <TENANT_ID>` |
 | `AZD_VERSION` / `NODE_VERSION` | Wrong tool versions | azd 1.30+ (major 1), Node.js 24 |
+| `TOOL_NOT_FOUND` | A hook cannot find a required executable on `PATH` | Install the standalone tool or add its installed directory to `PATH`, then restart the terminal; `az bicep version` alone does not prove that `bicep` is available |
+| `POSTGRES_REGION_RESTRICTED` | The subscription's PostgreSQL regional capabilities report a restriction or no supported tiers | Request regional access under Service and subscription limits, or approve another `AZURE_LOCATION`; setup stops before Foundry/Entra changes |
+| `INVALID_REGION_CAPABILITIES` | PostgreSQL eligibility could not be verified from the capability response | Resolve the capability API response before retrying; do not bypass the preflight |
 | `CONFIG_REQUIRED` | Missing value in noninteractive mode | Set the named value with `azd env set` |
 | `RESOURCE_GROUP_NOT_OWNED` / `RESOURCE_GROUP_MISMATCH` | `rg-<env>` exists for something else | Use a different environment name |
 | `FOUNDRY_UNSUPPORTED` / `FOUNDRY_ENDPOINT_MISMATCH` | Not OpenAI/AIServices, no custom subdomain, or wrong endpoint | Pick a supported account; let setup derive the endpoint |
+| `INVALID_FOUNDRY_MODE` / `FOUNDRY_TARGET_MISMATCH` | Invalid mode or create-mode target redirected from its deterministic account/demo group | Use `reuse` or `create`; use a fresh environment for dedicated creation, not a populated reuse environment |
+| `FOUNDRY_NOT_OWNED` / `FOUNDRY_PROJECT_NOT_OWNED` | Create would adopt an account/project without matching ownership tags and region | Stop; select a fresh environment, never relabel unrelated resources to bypass the guard |
+| `FOUNDRY_CREATE_DRIFT` | Owned account differs from Entra-only S0/project/public-HTTPS profile | Review drift explicitly; `FOUNDRY_NETWORK_REVIEWED` cannot override this guard |
 | `ADMIN_REQUIRED` | Service-principal deployment without a bootstrap admin | `azd env set GATEWAY_ADMIN_OBJECT_ID <user-object-guid>` |
 | `IDENTITY_SETUP_REQUIRED` | A provision plan before any Entra setup | Run `azd up`, or deliberately `azd hooks run preup` |
 | `MIGRATION_*` / `IMAGE_GATE_MISSING` | Migration job failed, uncertain or mismatched | Inspect the job execution; rerun `azd deploy gateway` |
@@ -72,6 +78,7 @@ Symptom → owning product → fix. Every setup hook and API error carries a **s
 | `SUBSCRIPTION_UNAVAILABLE` | A tenant-level CLI context cannot deploy resources | Set `AZURE_SUBSCRIPTION_ID` to a real, enabled subscription |
 | `INVALID_SKU` | Select an APIM Developer or supported v2 SKU | `Developer`, `BasicV2`, `StandardV2`, `PremiumV2` |
 | `INVALID_SCALE` | Minimum 1-10, maximum 1-30, maximum ≥ minimum | Fix `GATEWAY_MIN_REPLICAS` / `GATEWAY_MAX_REPLICAS` |
+| `ManagedEnvironmentCapacityHeavyUsageError` | Container Apps has insufficient regional capacity | Retry after checking the failed deployment, request Azure support, or approve a separate environment in another eligible primary region; `APIM_LOCATION` does not move Container Apps |
 | `INVALID_MCP_HOSTS` / `INVALID_MCP_AUDIENCES` | Exact public DNS names; audiences must not include the proof API | Remove wildcards, IPs, URLs and the internal audience |
 | `UNSAFE_ENVIRONMENT_VALUE` | Refusing to persist a secret or invalid value | Never store secrets in the azd environment |
 | `NETWORK_FAILURE` / `OPERATION_TIMEOUT` | Azure request failed or timed out; outcome may be uncertain | Check the target, then rerun the idempotent setup |
@@ -93,6 +100,10 @@ Symptom → owning product → fix. Every setup hook and API error carries a **s
 | `PRINCIPAL_REQUIRED` | Enterprise application not created for a supplied registration | An administrator creates the service principal |
 | `REGISTRATION_NOT_OWNED` / `AMBIGUOUS_REGISTRATION` | Setup refuses to repurpose another environment's app | Supply explicit IDs in `existing` mode |
 | `ROLE_ASSIGNMENT_REQUIRED` / `REDIRECT_REQUIRED` | `existing` mode: APIM `Gateway.Invoke` or SPA redirect not yet configured | Administrator assigns the role / registers `https://<app-fqdn>/auth.html` |
+
+Graph `InvalidValue` mentioning `api.preAuthorizedApplications.delegatedPermissionIds` means preauthorization referenced a permission before it was persisted. Setup publishes the API scope first, then preauthorizes the SPA in a separate update. Use the corrected hooks and rerun `azd up`; do not delete partially configured owned registrations.
+
+Graph `Request_UnsupportedQuery` on `appRoleAssignedTo` can result from filtering that relationship by `principalId`. Setup reads bounded pages and matches the principal, resource and role locally, preserving duplicate detection without the unsupported filter.
 
 Sign-in works but calls fail with `401 INVALID_TOKEN`: the API expects the **application GUID** as audience, not the `api://` URI; tokens must be v2. Remember `X-Team-Id` never grants membership.
 

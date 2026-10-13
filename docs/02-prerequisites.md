@@ -18,14 +18,14 @@
   <img src="./assets/badges/public-preview.svg" alt="APIM MCP API version: preview">
 </p>
 
-Everything to resolve **before** the first `azd up`: local tools, the Azure target (including the existing Foundry account this pattern reuses), Azure RBAC, Microsoft Entra rights, network reachability, regions, and cost approval. The offline loopback demo needs only Node.js 24 and npm. This page ends with a pre-flight checklist you can hand to the subscription owner.
+Everything to resolve **before** the first `azd up`: local tools, the Azure target (including Foundry reuse or opt-in dedicated creation), Azure RBAC, Microsoft Entra rights, network reachability, regions, and cost approval. The offline loopback demo needs only Node.js 24 and npm. This page ends with a pre-flight checklist you can hand to the subscription owner.
 
 ## At a glance
 
 | | Area | You need |
 |---|---|---|
 | <img src="./assets/icons/dev-console.svg" width="24" alt=""> | **Local tools** | Node.js 24 LTS + npm 10+, PowerShell 7, azd 1.30+ (major 1), Bicep CLI on `PATH` |
-| <img src="./assets/icons/foundry.svg" width="24" alt=""> | **Existing Foundry** | An OpenAI or AIServices account with a custom subdomain, in the target subscription |
+| <img src="./assets/icons/foundry.svg" width="24" alt=""> | **Foundry** | Reuse an OpenAI/AIServices account with custom subdomain in the target subscription, or opt in to dedicated `FOUNDRY_SETUP_MODE=create` |
 | <img src="./assets/icons/entra-roles.svg" width="24" alt=""> | **Azure RBAC** | Deploy resources + create custom roles and role assignments in the app and Foundry resource groups |
 | <img src="./assets/icons/entra-id.svg" width="24" alt=""> | **Entra** | Rights to create three app registrations and assign app roles - or an administrator handoff |
 | <img src="./assets/icons/virtual-network.svg" width="24" alt=""> | **Network** | ACR build workers → npm registry; local tools → Azure/Graph; new ACA VNet → Foundry |
@@ -52,6 +52,8 @@ Everything to resolve **before** the first `azd up`: local tools, the Azure targ
 
 No local Docker daemon, local PostgreSQL or database password is required by the default deployment path. Native azd remote builds use ACR. azd may offer a local Docker fallback after a remote build failure; resolve the remote network/registry/permissions issue first.
 
+The hooks invoke `bicep` directly. Azure CLI and azd can have private Bicep installations without putting the executable on `PATH`, so a successful `az bicep version` is not sufficient. On Windows, install the standalone CLI with `winget install --exact --id Microsoft.Bicep`, or add an existing Bicep executable's directory to your user `PATH`. Restart the terminal and confirm `bicep --version` before `azd up`.
+
 `package-lock.json` resolves from the public npm registry. If you must use a package mirror, configure it for your user (`npm config set registry <mirror-url>`); npm rewrites the lockfile's registry host automatically, and integrity hashes are still checked. Container builds accept `--build-arg NPM_CONFIG_REGISTRY=<mirror-url>`.
 
 ## Azure target
@@ -59,7 +61,7 @@ No local Docker daemon, local PostgreSQL or database password is required by the
 | Resource | Requirement | Why |
 |---|---|---|
 | <img src="./assets/icons/subscription.svg" width="20" alt=""> Subscription | Real, enabled, explicitly selected (`SUBSCRIPTION_UNAVAILABLE` otherwise) | A tenant-level login is not a deployment target |
-| <img src="./assets/icons/foundry.svg" width="20" alt=""> Foundry account | Existing public-Azure OpenAI or AIServices account **with a custom subdomain**, same subscription; may be in a different resource group (`FOUNDRY_UNSUPPORTED` otherwise) | Reused for inference; this workflow does not create Foundry or model deployments |
+| <img src="./assets/icons/foundry.svg" width="20" alt=""> Foundry account | Default reuse: public-Azure OpenAI/AIServices account **with a custom subdomain**, same subscription, possibly another RG (`FOUNDRY_UNSUPPORTED` otherwise). Opt-in create: regional AIServices S0 availability/rights | Create mode provisions an Entra-only dedicated account/project in the demo group; neither mode provisions initial models |
 | <img src="./assets/icons/foundry-models.svg" width="20" alt=""> Model deployments | On-demand (token-priced) text-chat deployments with an explicit version | Provisioned throughput and fixed hosting charges cannot use the token-price ledger (`UNSUPPORTED_DEPLOYMENT`) |
 | <img src="./assets/icons/monitor.svg" width="20" alt=""> Quota | APIM, PostgreSQL Flexible Server SKU, Container Apps in the chosen region | Not established without a real target |
 
@@ -68,13 +70,13 @@ No local Docker daemon, local PostgreSQL or database password is required by the
 
 ## Azure RBAC
 
-The deploying identity needs rights to provision the supporting Azure resources and to create the narrow custom roles and role assignments in **both** the new resource group and the existing Foundry resource group.
+The deploying identity needs rights to provision the supporting Azure resources and to create the narrow custom roles and role assignments in the new resource group and, for reuse, the existing Foundry resource group. Create mode also requires Foundry account/project creation rights in the new group; workload identities do not receive them.
 
 | Scope | Needed for | Typical role |
 |---|---|---|
 | Subscription (azd creates `rg-<env>`) or target resource group | Resource deployment | Contributor |
 | New resource group | Custom APIM role + assignments (ACR, APIM, App Insights, identities) | Owner or User Access Administrator |
-| Existing Foundry resource group / account | Custom Foundry deployment role + `Cognitive Services OpenAI User` assignment | Owner or User Access Administrator |
+| Foundry resource group / account (new demo group in create mode) | Custom Foundry deployment role + `Cognitive Services OpenAI User` assignment | Owner or User Access Administrator |
 
 No subscription-wide Contributor/Owner role is granted to a workload identity. Every role the workloads receive is listed in [07 - Identity and security](./07-identity-and-security.md#managed-identities-and-azure-rbac).
 
@@ -97,7 +99,7 @@ Entra permission to create/manage the three application registrations and their 
 |---|---|---|
 | Local tools | Azure Resource Manager, Microsoft Graph | azd and hook calls |
 | ACR build workers | `https://registry.npmjs.org/` (or your mirror) | `npm ci` during the remote image build |
-| New ACA VNet (`10.42.0.0/16`) | Existing Foundry endpoint | Inference and deployment management; restricted accounts need a reviewed design (`FOUNDRY_NETWORK_REVIEWED`) |
+| New ACA VNet (`10.42.0.0/16`) | Configured Foundry endpoint | Inference and deployment management; restricted reuse accounts need a reviewed design (`FOUNDRY_NETWORK_REVIEWED`); create mode uses public HTTPS |
 | Browsers | Container Apps HTTPS ingress | Portal |
 | Clients and agents | APIM gateway | Data plane and MCP |
 
@@ -105,7 +107,11 @@ Review address overlap before connecting the isolated `10.42.0.0/16` development
 
 ## Regions
 
-All components must be available in one region; the existing Foundry account may be elsewhere, but the same region keeps latency and egress low.
+The primary components must be available in `AZURE_LOCATION`; APIM can use an independent `APIM_LOCATION`, and Container Apps can use `CONTAINER_APPS_LOCATION` with privately peered, non-overlapping application/database VNets. An existing Foundry account may also be elsewhere. Keeping them together reduces cross-region latency and egress.
+
+Create mode places the dedicated Foundry account/project in `AZURE_LOCATION` with the rest of the demo. Verify **subscription-specific** eligibility as well as published availability: PostgreSQL `OfferRestricted: Enabled` with an empty `supportedServerEditions` list is a blocker, not a reason to try a partially billable deployment. Request regional enablement under Service and subscription limits or obtain approval for another region before provisioning.
+
+Both setup hooks query the subscription's PostgreSQL regional capabilities before Foundry preparation or Entra changes. A restricted location or empty supported-tier list stops with `POSTGRES_REGION_RESTRICTED`; an unverifiable response stops with `INVALID_REGION_CAPABILITIES`. This eligibility check does not guarantee SKU capacity, quota or availability of the other services.
 
 | Tier | Guidance |
 |---|---|
@@ -163,7 +169,7 @@ az provider show -n Microsoft.Insights --query "resourceTypes[?resourceType=='co
 - [ ] `npm ci`, `npm run typecheck` and `npm test` pass locally ([04](./04-testing.md))
 - [ ] Target tenant and subscription identified by ID; `azd auth login --tenant-id` done
 - [ ] Region chosen and SKU availability verified with the commands above
-- [ ] Existing Foundry account (OpenAI/AIServices, custom subdomain) in the same subscription; network reachability reviewed
+- [ ] Foundry mode chosen: existing OpenAI/AIServices account with custom subdomain and reviewed connectivity, or dedicated `create` with S0 regional availability and creation rights
 - [ ] On-demand chat deployments, current prices, context windows and maximum outputs written down
 - [ ] Deployer can create custom roles and role assignments in the new and the Foundry resource groups
 - [ ] Entra rights confirmed, or administrator-supplied registrations ready for `ENTRA_SETUP_MODE=existing`

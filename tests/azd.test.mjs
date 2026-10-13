@@ -24,6 +24,18 @@ const env = () => ({
   POSTGRES_DATABASE: 'gateway', POSTGRES_APP_ROLE: 'gateway_app',
 });
 const response = body => ({ body, status: 200, headers: new Headers() });
+const createEnv = () => {
+  const values = { ...env(), FOUNDRY_SETUP_MODE: 'create' };
+  delete values.FOUNDRY_RESOURCE_GROUP;
+  delete values.FOUNDRY_ACCOUNT_NAME;
+  return values;
+};
+const ownedAccount = values => ({
+  kind: 'AIServices', sku: { name: 'S0' }, location: values.AZURE_LOCATION,
+  tags: { 'azd-env-name': values.AZURE_ENV_NAME, application: 'foundry-ai-gateway' },
+  properties: { customSubDomainName: values.FOUNDRY_ACCOUNT_NAME, disableLocalAuth: true,
+    allowProjectManagement: true, publicNetworkAccess: 'Enabled', networkAcls: { defaultAction: 'Allow' } },
+});
 
 class FakeIo {
   apps = [];
@@ -70,7 +82,13 @@ class FakeIo {
     if (clean.startsWith('/applications/')) {
       const app = this.apps.find(item => item.id === clean.split('/')[2]);
       assert.ok(app, 'Known application');
-      if (method === 'PATCH') Object.assign(app, structuredClone(options.body));
+      if (method === 'PATCH') {
+        const permissions = options.body.api?.preAuthorizedApplications?.flatMap(item => item.delegatedPermissionIds) ?? [];
+        if (permissions.some(id => !app.api?.oauth2PermissionScopes?.some(scope => scope.id === id))) {
+          throw new SetupError('InvalidValue', 'Preauthorization references a permission that has not been persisted.', 400);
+        }
+        Object.assign(app, structuredClone(options.body));
+      }
       return response(structuredClone(app));
     }
     if (clean === '/servicePrincipals' && method === 'GET') {
@@ -100,7 +118,16 @@ class FakeIo {
     if (path === `/subscriptions/${environment.AZURE_SUBSCRIPTION_ID}?api-version=2022-12-01`) {
       return response({ subscriptionId: environment.AZURE_SUBSCRIPTION_ID, tenantId: environment.AZURE_TENANT_ID, state: 'Enabled' });
     }
+    if (path.includes('/Microsoft.DBforPostgreSQL/locations/')) {
+      return response({ value: [{ name: 'FlexibleServerCapabilities', restricted: 'Disabled',
+        supportedServerEditions: [{ name: 'Burstable' }] }] });
+    }
     if (path.includes('/Microsoft.CognitiveServices/accounts/')) {
+      if (environment.FOUNDRY_SETUP_MODE === 'create') {
+        const resource = path.includes('/projects/') ? this.createdProject : this.createdAccount;
+        if (!resource) throw new SetupError('ResourceNotFound', 'Not provisioned yet', 404);
+        return response(resource);
+      }
       return response({ kind: 'AIServices', properties: { customSubDomainName: 'existing-foundry' } });
     }
     if (path.includes('/resourceGroups/') && !path.includes('/providers/')) {
@@ -235,6 +262,35 @@ test('unsafe Graph pagination is rejected instead of forwarding credentials', as
   await assert.rejects(assignRole(io, env(), uuid(4), uuid(5), uuid(6)), error => error.code === 'INVALID_ASSIGNMENTS');
 });
 
+test('role assignment lookup avoids unsupported principal filters and finds duplicates on later pages', async () => {
+  const io = new FakeIo();
+  const assignment = { principalId: uuid(4), resourceId: uuid(5), appRoleId: uuid(6) };
+  let pages = 0;
+  io.graph = async (_environment, path, options = {}) => {
+    assert.equal(options.method ?? 'GET', 'GET');
+    assert.equal(new URL(`https://graph.microsoft.com/v1.0${path}`).searchParams.has('$filter'), false);
+    pages++;
+    return response(pages === 1
+      ? { value: [{ ...assignment, principalId: uuid(99) }],
+        '@odata.nextLink': `https://graph.microsoft.com/v1.0/servicePrincipals/${uuid(5)}/appRoleAssignedTo?$skiptoken=next` }
+      : { value: [assignment] });
+  };
+  await assignRole(io, env(), assignment.principalId, assignment.resourceId, assignment.appRoleId);
+  assert.equal(pages, 2);
+});
+
+test('role assignment pagination never authorizes writes after reaching its bound', async () => {
+  const io = new FakeIo(); let pages = 0;
+  io.graph = async (_environment, _path, options = {}) => {
+    assert.equal(options.method ?? 'GET', 'GET');
+    pages++;
+    return response({ value: [], '@odata.nextLink':
+      `https://graph.microsoft.com/v1.0/servicePrincipals/${uuid(5)}/appRoleAssignedTo?$skiptoken=${pages}` });
+  };
+  await assert.rejects(assignRole(io, env(), uuid(4), uuid(5), uuid(6)), error => error.code === 'INVALID_ASSIGNMENTS');
+  assert.equal(pages, 10);
+});
+
 test('preparation derives Foundry endpoint from the selected account and refuses tenant-only context', async () => {
   const io = new FakeIo(); const values = env();
   await prepare(io, values);
@@ -244,6 +300,51 @@ test('preparation derives Foundry endpoint from the selected account and refuses
   denied.arm = async () => response({ state: 'Warned', tenantId: uuid(2), subscriptionId: uuid(1) });
   await assert.rejects(prepare(denied, env()), error => error.code === 'SUBSCRIPTION_UNAVAILABLE');
   assert.equal(denied.apps.length, 0);
+});
+
+test('APIM region overrides are validated independently without changing the primary region', async () => {
+  const values = { ...env(), APIM_LOCATION: 'southcentralus' };
+  await prepare(new FakeIo(), values);
+  assert.equal(values.AZURE_LOCATION, 'eastus2');
+  assert.equal(values.APIM_LOCATION, 'southcentralus');
+  const io = new FakeIo();
+  await assert.rejects(prepare(io, { ...env(), APIM_LOCATION: 'South Central US' }),
+    error => error.code === 'CONFIG_REQUIRED' && error.message.includes('APIM_LOCATION'));
+  assert.equal(io.requests.length, 0);
+});
+
+test('Container Apps region overrides preserve the database region and validate before Azure requests', async () => {
+  const io = new FakeIo(); const values = { ...env(), CONTAINER_APPS_LOCATION: 'southcentralus' };
+  await prepare(io, values);
+  assert.equal(values.AZURE_LOCATION, 'eastus2');
+  assert.ok(io.requests.some(request => request.path.includes('/Microsoft.DBforPostgreSQL/locations/eastus2/')));
+  const invalid = new FakeIo();
+  await assert.rejects(prepare(invalid, { ...env(), CONTAINER_APPS_LOCATION: 'South Central US' }),
+    error => error.code === 'CONFIG_REQUIRED' && error.message.includes('CONTAINER_APPS_LOCATION'));
+  assert.equal(invalid.requests.length, 0);
+});
+
+test('setup persists the delegated scope before SPA preauthorization and resumes a partial API update', async () => {
+  const io = new FakeIo(); const values = env();
+  const originalGraph = io.graph.bind(io);
+  let interrupted = false;
+  io.graph = async (environment, path, options = {}) => {
+    if (!interrupted && options.method === 'PATCH' && options.body.api?.preAuthorizedApplications?.length) {
+      interrupted = true;
+      throw new SetupError('NETWORK_FAILURE', 'Preauthorization interrupted.');
+    }
+    return originalGraph(environment, path, options);
+  };
+  await assert.rejects(prepare(io, values), error => error.code === 'NETWORK_FAILURE');
+  const api = io.apps.find(app => app.appId === values.ENTRA_API_AUDIENCE);
+  assert.ok(api.api.oauth2PermissionScopes.some(scope => scope.value === 'access_as_user'));
+  assert.equal(api.api.preAuthorizedApplications?.length ?? 0, 0);
+  await prepare(io, values);
+  assert.equal(io.apps.length, 3);
+  assert.deepEqual(api.api.preAuthorizedApplications, [{
+    appId: values.ENTRA_SPA_CLIENT_ID,
+    delegatedPermissionIds: [api.api.oauth2PermissionScopes.find(scope => scope.value === 'access_as_user').id],
+  }]);
 });
 
 test('provision/preview hooks are read-only and never perform first-time Entra setup', async () => {
@@ -257,6 +358,173 @@ test('provision/preview hooks are read-only and never perform first-time Entra s
   io.assignments = [];
   await assert.rejects(checkTarget(io, values), error => error.code === 'ROLE_ASSIGNMENT_REQUIRED');
   assert.ok(io.requests.every(request => request.method === 'GET'));
+});
+
+test('restricted or unverifiable PostgreSQL regions block setup before Foundry and Graph changes', async () => {
+  for (const [capabilities, code] of [
+    [{ value: [{ name: 'FlexibleServerCapabilities', restricted: 'Enabled', supportedServerEditions: [{ name: 'Burstable' }] }] }, 'POSTGRES_REGION_RESTRICTED'],
+    [{ value: [{ name: 'FlexibleServerCapabilities', restricted: 'Disabled', supportedServerEditions: [] }] }, 'POSTGRES_REGION_RESTRICTED'],
+    [{ value: [] }, 'INVALID_REGION_CAPABILITIES'],
+    [{ value: [{ name: 'FlexibleServerCapabilities', restricted: 'Disabled' }] }, 'INVALID_REGION_CAPABILITIES'],
+  ]) {
+    for (const action of [prepare, checkTarget]) {
+      const io = new FakeIo(); const values = createEnv();
+      const originalArm = io.arm.bind(io);
+      io.arm = async (environment, path, options) => path.includes('/Microsoft.DBforPostgreSQL/locations/')
+        ? response(capabilities) : originalArm(environment, path, options);
+      await assert.rejects(action(io, values), error => error.code === code);
+      assert.equal(io.apps.length, 0);
+      assert.equal(values.FOUNDRY_CREATED_ACCOUNT_NAME, undefined);
+      assert.ok(io.requests.every(request => request.method === 'GET'));
+    }
+  }
+});
+
+test('PostgreSQL capability permission errors propagate without beginning identity setup', async () => {
+  const io = new FakeIo();
+  const originalArm = io.arm.bind(io);
+  io.arm = async (environment, path, options) => {
+    if (path.includes('/Microsoft.DBforPostgreSQL/locations/')) throw new SetupError('AuthorizationFailed', 'Denied', 403);
+    return originalArm(environment, path, options);
+  };
+  await assert.rejects(prepare(io, createEnv()), error => error.code === 'AuthorizationFailed' && error.status === 403);
+  assert.equal(io.apps.length, 0);
+});
+
+test('create mode prepares an absent dedicated account without ARM writes and persists its stable name once', async () => {
+  const io = new FakeIo(); const values = createEnv();
+  const originalArm = io.arm.bind(io);
+  io.arm = async (environment, path, options) => {
+    if (path.includes('/resourceGroups/') && !path.includes('/providers/')) {
+      throw new SetupError('ResourceGroupNotFound', 'Not provisioned yet', 404);
+    }
+    return originalArm(environment, path, options);
+  };
+  await prepare(io, values);
+  const account = values.FOUNDRY_ACCOUNT_NAME;
+  assert.match(account, /^gateway-foundry-[a-f0-9]{20}$/);
+  assert.equal(values.FOUNDRY_CREATED_ACCOUNT_NAME, account);
+  assert.equal(values.FOUNDRY_RESOURCE_GROUP, 'rg-gateway-test');
+  assert.equal(values.FOUNDRY_PROJECT_NAME, 'gateway-project');
+  assert.equal(values.FOUNDRY_ENDPOINT, `https://${account}.services.ai.azure.com/`);
+  assert.ok(io.requests.filter(request => request.path.startsWith('/subscriptions/'))
+    .every(request => request.method === 'GET'));
+  io.requests = [];
+  await checkTarget(io, values);
+  assert.equal(values.FOUNDRY_ACCOUNT_NAME, account);
+  assert.equal(io.writes.filter(([key]) => key === 'FOUNDRY_CREATED_ACCOUNT_NAME').length, 1);
+  assert.ok(io.requests.every(request => request.method === 'GET'));
+  assert.ok(!io.requests.some(request => request.path.includes('/projects/')));
+  const fresh = createEnv();
+  await prepare(new FakeIo(), fresh);
+  assert.equal(fresh.FOUNDRY_CREATED_ACCOUNT_NAME, account);
+  const other = { ...createEnv(), AZURE_SUBSCRIPTION_ID: uuid(99) };
+  await prepare(new FakeIo(), other);
+  assert.notEqual(other.FOUNDRY_CREATED_ACCOUNT_NAME, account);
+});
+
+test('create mode resumes owned resources and rejects unrelated accounts and projects before Entra changes', async () => {
+  const values = createEnv(); const initial = new FakeIo();
+  await prepare(initial, values);
+  const io = new FakeIo();
+  io.createdAccount = ownedAccount(values);
+  io.createdProject = { location: values.AZURE_LOCATION, tags: io.createdAccount.tags };
+  await checkTarget(ioWithIdentity(initial, io), values);
+  assert.ok(io.requests.every(request => request.method === 'GET'));
+  for (const target of ['account', 'project']) {
+    const denied = new FakeIo();
+    denied.createdAccount = ownedAccount(values);
+    denied.createdProject = { location: values.AZURE_LOCATION, tags: denied.createdAccount.tags };
+    if (target === 'account') denied.createdAccount.tags.application = 'other-demo';
+    else denied.createdProject = { ...denied.createdProject, tags: { application: 'other-demo' } };
+    await assert.rejects(prepare(denied, values),
+      error => error.code === (target === 'account' ? 'FOUNDRY_NOT_OWNED' : 'FOUNDRY_PROJECT_NOT_OWNED'));
+    assert.ok(denied.requests.every(request => request.method === 'GET'));
+  }
+});
+
+function ioWithIdentity(source, target) {
+  target.apps = source.apps;
+  target.principals = source.principals;
+  target.assignments = source.assignments;
+  return target;
+}
+
+test('create mode refuses target redirection, bad project names, endpoint mismatches and configuration drift', async () => {
+  const prepared = createEnv();
+  await prepare(new FakeIo(), prepared);
+  for (const [key, value] of [
+    ['FOUNDRY_CREATED_ACCOUNT_NAME', 'unrelated-account'],
+    ['FOUNDRY_ACCOUNT_NAME', 'existing-foundry'],
+    ['FOUNDRY_RESOURCE_GROUP', 'shared-foundry'],
+    ['AZURE_LOCATION', 'westus2'],
+  ]) {
+    const io = new FakeIo();
+    await assert.rejects(prepare(io, { ...prepared, [key]: value }), error => error.code === 'FOUNDRY_TARGET_MISMATCH');
+    assert.equal(io.apps.length, 0);
+  }
+  await assert.rejects(prepare(new FakeIo(), { ...prepared, FOUNDRY_PROJECT_NAME: '../other' }),
+    error => error.code === 'CONFIG_REQUIRED');
+  await assert.rejects(prepare(new FakeIo(), { ...prepared, FOUNDRY_ENDPOINT: 'https://wrong.services.ai.azure.com/' }),
+    error => error.code === 'FOUNDRY_ENDPOINT_MISMATCH');
+  for (const update of [
+    { kind: 'OpenAI' }, { sku: { name: 'other' } },
+    { properties: { disableLocalAuth: false } },
+    { properties: { publicNetworkAccess: 'Disabled' } },
+    { properties: { networkAcls: { defaultAction: 'Deny' } } },
+    { properties: { customSubDomainName: 'other' } },
+    { properties: { allowProjectManagement: false } },
+  ]) {
+    const io = new FakeIo();
+    const account = ownedAccount(prepared);
+    io.createdAccount = { ...account, ...update, properties: { ...account.properties, ...update.properties } };
+    await assert.rejects(prepare(io, { ...prepared, FOUNDRY_NETWORK_REVIEWED: 'true' }),
+      error => error.code === 'FOUNDRY_CREATE_DRIFT');
+    assert.ok(io.requests.every(request => request.method === 'GET'));
+  }
+});
+
+test('Foundry setup rejects invalid mode and never interprets authorization errors as an absent account', async () => {
+  await assert.rejects(prepare(new FakeIo(), { ...env(), FOUNDRY_SETUP_MODE: 'automatic' }),
+    error => error.code === 'INVALID_FOUNDRY_MODE');
+  const io = new FakeIo(); const original = io.arm.bind(io);
+  io.arm = async (values, path, options) => {
+    if (path.includes('/Microsoft.CognitiveServices/')) throw new SetupError('AuthorizationFailed', 'Denied', 403);
+    return original(values, path, options);
+  };
+  await assert.rejects(prepare(io, createEnv()), error => error.status === 403);
+  assert.equal(io.apps.length, 0);
+});
+
+test('create mode cannot adopt an unrelated demo resource group', async () => {
+  const io = new FakeIo(); const original = io.arm.bind(io); const values = createEnv();
+  io.arm = async (environment, path, options) => {
+    if (path.includes('/resourceGroups/') && !path.includes('/providers/')) {
+      return response({ location: environment.AZURE_LOCATION, tags: { application: 'different-demo' } });
+    }
+    return original(environment, path, options);
+  };
+  await assert.rejects(prepare(io, values), error => error.code === 'RESOURCE_GROUP_NOT_OWNED');
+  assert.equal(values.FOUNDRY_CREATED_ACCOUNT_NAME, undefined);
+  assert.equal(io.apps.length, 0);
+});
+
+test('default reuse mode preserves OpenAI endpoint derivation and restricted-network gates without account creation', async () => {
+  const io = new FakeIo(); const values = env(); const original = io.arm.bind(io);
+  io.arm = async (environment, path, options) => path.includes('/Microsoft.CognitiveServices/')
+    ? response({ kind: 'OpenAI', properties: { customSubDomainName: 'existing-foundry',
+      publicNetworkAccess: 'Disabled', networkAcls: { defaultAction: 'Deny' } } })
+    : original(environment, path, options);
+  await assert.rejects(prepare(io, values), error => error.code === 'FOUNDRY_NETWORK_RESTRICTED');
+  await prepare(io, { ...values, FOUNDRY_NETWORK_REVIEWED: 'true' });
+  assert.equal(io.writes.find(([key]) => key === 'FOUNDRY_ENDPOINT')[1], 'https://existing-foundry.openai.azure.com/');
+  assert.ok(!io.writes.some(([key]) => key === 'FOUNDRY_CREATED_ACCOUNT_NAME'));
+  const missing = new FakeIo(); const originalMissing = missing.arm.bind(missing);
+  missing.arm = async (environment, path, options) => {
+    if (path.includes('/Microsoft.CognitiveServices/')) throw new SetupError('ResourceNotFound', 'Missing', 404);
+    return originalMissing(environment, path, options);
+  };
+  await assert.rejects(prepare(missing, env()), error => error.status === 404);
 });
 
 test('remote image resolution is restricted to the provisioned registry and exact manifest digest', async () => {
@@ -299,6 +567,15 @@ test('release is gated on successful migration of the exact immutable image', as
   assert.ok(!JSON.stringify(io.writes).includes('fake-acr'));
 });
 
+test('migration runs in the provisioned Container Apps region, not the database region', async () => {
+  const io = new FakeIo(); const values = { ...env(), AZURE_CONTAINER_APPS_LOCATION: 'southcentralus' };
+  await setupRegistrations(io, values);
+  await migrateRelease(io, values);
+  assert.equal(io.deployment.parameters.location.value, 'southcentralus');
+  assert.equal(values.AZURE_LOCATION, 'eastus2');
+  assert.equal(io.deployment.parameters.postgresHost.value, values.POSTGRES_HOST);
+});
+
 test('failed or wrong-image migrations never update the app release image', async () => {
   for (const kind of ['failed', 'wrong-image']) {
     const io = new FakeIo(); const values = env();
@@ -333,6 +610,13 @@ test('CLI credentials and raw diagnostics are not exposed in hook errors or envi
   const io = new AzureIo({ run: async () => { throw new Error('SUPER_SECRET_TOKEN'); } });
   await assert.rejects(io.command('azd', ['auth', 'token']), error => !error.message.includes('SUPER_SECRET_TOKEN'));
   await assert.rejects(io.save({}, 'ACCESS_TOKEN', 'secret'), error => error.code === 'UNSAFE_ENVIRONMENT_VALUE');
+});
+
+test('missing CLI tools produce actionable errors without exposing raw diagnostics', async () => {
+  const io = new AzureIo({ run: async () => { throw Object.assign(new Error('PRIVATE_PATH_OR_TOKEN'), { code: 'ENOENT' }); } });
+  await assert.rejects(io.command('bicep', ['--version']), error =>
+    error.code === 'TOOL_NOT_FOUND' && error.message.includes('bicep') &&
+    error.message.includes('PATH') && !error.message.includes('PRIVATE_PATH_OR_TOKEN'));
 });
 
 test('ARM requests cannot escape the selected subscription and redirects are disabled', async () => {

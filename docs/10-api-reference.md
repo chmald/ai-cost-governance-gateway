@@ -66,7 +66,7 @@ App-only callers (managed identities, service principals, Entra agent identities
 Route notes:
 
 - **Teams.** `applications` are service-principal object IDs of app-only callers. Omitting it on update preserves the stored list; an ID cannot be in both lists (`PRINCIPAL_CONFLICT`). A budget below current-month spent plus reserved funds is rejected (`BUDGET_COMMITTED`).
-- **Models.** `POST` provisions within the configured existing Foundry account, never an arbitrary caller-supplied account. `PUT` changes pricing/governance fields only. Model provisioning status is the provider state, or `demo` for local simulated models.
+- **Models.** `POST` provisions within the configured Foundry account (reused or dedicated), never an arbitrary caller-supplied account. `PUT` changes pricing/governance fields only. Model provisioning status is the provider state, or `demo` for local simulated models.
 - **MCP servers.** Register an HTTPS Streamable HTTP server in APIM only if its host/audience is operator-allowlisted. Never return tokens or subscription keys. See [09 - MCP governance](./09-mcp-governance.md).
 - **Usage.** Status is `reserved`, `held`, `invalid_usage`, or `settled`; the first three still consume reserved budget.
 - **Audit.** `actorType` is `user`, `app`, `system`, or `unknown` for rows written before v0.2.0.

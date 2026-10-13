@@ -3,7 +3,7 @@
   "contentVersion": "1.0.0.0",
   "parameters": {
     "environmentName": { "value": "${AZURE_ENV_NAME}" },
-    "location": { "value": "${AZURE_LOCATION}" },
+    "location": { "value": "${AZURE_CONTAINER_APPS_LOCATION}" },
     "jobName": { "value": "${MIGRATION_JOB_NAME}" },
     "containerAppsEnvironmentName": { "value": "${AZURE_CONTAINER_APPS_ENVIRONMENT_NAME}" },
     "containerRegistryName": { "value": "${AZURE_CONTAINER_REGISTRY_NAME}" },

@@ -97,9 +97,8 @@ export async function assignRole(io, env, principalId, resourceId, appRoleId, { 
   [principalId, resourceId, appRoleId].forEach(value => {
     if (!guidPattern.test(value ?? '')) throw new SetupError('INVALID_ASSIGNMENT', 'Invalid app-role assignment identity.');
   });
-  let path = `/servicePrincipals/${resourceId}/appRoleAssignedTo?$filter=${encodeURIComponent(`principalId eq ${principalId}`)}`;
-  // Use a principal-filtered query and handle bounded pagination rather than
-  // treating a truncated Graph result as proof that an assignment is missing.
+  let path = `/servicePrincipals/${resourceId}/appRoleAssignedTo`;
+  // This relationship rejects principalId filters; scan bounded pages locally.
   for (let page = 0; page < 10; page++) {
     const { body } = await readEventually(io, () => io.graph(env, path));
     if (!Array.isArray(body?.value)) throw new SetupError('INVALID_ASSIGNMENTS', 'Graph returned an invalid role-assignment list.');
@@ -141,14 +140,20 @@ export async function setupRegistrations(io, env, { readOnly = false } = {}) {
       api: {
         ...api.api, requestedAccessTokenVersion: 2,
         oauth2PermissionScopes: [...(api.api?.oauth2PermissionScopes ?? []).filter(item => item.value !== permission.value), permission],
-        preAuthorizedApplications: [
-          ...(api.api?.preAuthorizedApplications ?? []).filter(item => item.appId !== spa.appId),
-          { appId: spa.appId, delegatedPermissionIds: [permission.id] },
-        ],
       },
     };
     await io.graph(env, `/applications/${api.id}`, { method: 'PATCH', body: apiPatch });
     api = { ...api, ...apiPatch };
+    // Graph validates preauthorization against already-persisted permission IDs.
+    const authorizationPatch = { api: {
+      ...api.api,
+      preAuthorizedApplications: [
+        ...(api.api.preAuthorizedApplications ?? []).filter(item => item.appId !== spa.appId),
+        { appId: spa.appId, delegatedPermissionIds: [permission.id] },
+      ],
+    } };
+    await io.graph(env, `/applications/${api.id}`, { method: 'PATCH', body: authorizationPatch });
+    api = { ...api, ...authorizationPatch };
     const internalPatch = {
       identifierUris: [...new Set([...(internal.identifierUris ?? []), `api://${internal.appId}`])],
       appRoles: mergeRoles(internal.appRoles, [proof]), api: { ...internal.api, requestedAccessTokenVersion: 2 },

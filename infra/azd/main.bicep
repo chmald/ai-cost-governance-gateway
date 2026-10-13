@@ -7,6 +7,12 @@ param environmentName string
 @minLength(1)
 param location string
 
+@description('Optional APIM-only region override. Empty uses location; other resources remain in location.')
+param apimLocation string = ''
+
+@description('Optional Container Apps region override. Empty uses location; PostgreSQL and Foundry remain in location.')
+param containerAppsLocation string = ''
+
 @minLength(36)
 @maxLength(36)
 param azureTenantId string
@@ -39,12 +45,26 @@ param entraApiAudience string
 @maxLength(36)
 param gatewayApiAudience string
 
-@description('Existing Foundry account resource group in this subscription. No Foundry resources are provisioned.')
+@description('Reuse an existing Foundry account by default; create opts in to a dedicated S0 account/project in the new demo resource group.')
+@allowed([
+  'reuse'
+  'create'
+])
+param foundrySetupMode string = 'reuse'
+
+@description('Existing Foundry account resource group in reuse mode; prepare sets the new demo group in create mode.')
 @minLength(1)
 param foundryResourceGroup string
 
 @minLength(1)
 param foundryAccountName string
+
+@description('Verified account-root endpoint saved by prepare; create mode also derives it from the persisted account name.')
+@minLength(1)
+param foundryEndpoint string
+
+@maxLength(64)
+param foundryProjectName string = 'gateway-project'
 
 @allowed([
   'Burstable'
@@ -85,6 +105,8 @@ module foundation 'modules/foundation.bicep' = {
     name: appName
     resourceToken: resourceToken
     location: location
+    apimLocation: empty(apimLocation) ? location : apimLocation
+    containerAppsLocation: empty(containerAppsLocation) ? location : containerAppsLocation
     tags: tags
     azureTenantId: azureTenantId
     publisherName: publisherName
@@ -100,21 +122,41 @@ module foundation 'modules/foundation.bicep' = {
   }
 }
 
+module foundry 'modules/foundry.bicep' = if (foundrySetupMode == 'create') {
+  name: 'gateway-foundry-${resourceToken}'
+  scope: rg
+  params: {
+    accountName: foundryAccountName
+    projectName: foundryProjectName
+    location: location
+    tags: tags
+  }
+}
+
 module foundryAccess '../modules/foundry-access.bicep' = {
   name: 'gateway-foundry-access-${resourceToken}'
-  scope: resourceGroup(foundryResourceGroup)
+  scope: resourceGroup(foundrySetupMode == 'create' ? rg.name : foundryResourceGroup)
   params: {
     accountName: foundryAccountName
     appPrincipalId: foundation.outputs.runtimePrincipalId
     appIdentityResourceId: foundation.outputs.runtimeIdentityId
   }
+  dependsOn: [
+    foundry
+  ]
 }
 
+output FOUNDRY_ACCOUNT_NAME string = foundryAccountName
+output FOUNDRY_RESOURCE_GROUP string = foundrySetupMode == 'create' ? rg.name : foundryResourceGroup
+output FOUNDRY_ENDPOINT string = foundrySetupMode == 'create' ? foundry!.outputs.endpoint : foundryEndpoint
+output FOUNDRY_PROJECT_NAME string = foundrySetupMode == 'create' ? foundryProjectName : ''
+output FOUNDRY_PROJECT_ENDPOINT string = foundrySetupMode == 'create' ? foundry!.outputs.projectEndpoint : ''
 output AZURE_RESOURCE_GROUP string = rg.name
 output AZURE_CONTAINER_REGISTRY_NAME string = foundation.outputs.registryName
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = foundation.outputs.registryEndpoint
 output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = foundation.outputs.environmentName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = foundation.outputs.environmentId
+output AZURE_CONTAINER_APPS_LOCATION string = empty(containerAppsLocation) ? location : containerAppsLocation
 output AZURE_CONTAINER_APP_NAME string = appName
 output SERVICE_GATEWAY_RESOURCE_ID string = resourceId(rg.name, 'Microsoft.App/containerApps', appName)
 output GATEWAY_URL string = foundation.outputs.gatewayUrl

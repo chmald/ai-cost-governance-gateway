@@ -65,7 +65,10 @@ export class AzureIo {
         env: { ...process.env, AZD_CHECK_VERSION: 'false' },
       });
       return result.stdout.trim();
-    } catch {
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        throw new SetupError('TOOL_NOT_FOUND', `${name} is not available on PATH. Install the standalone tool or add its installed directory to PATH, then restart the terminal. Azure CLI and azd managed Bicep installations are not automatically available to these hooks.`);
+      }
       // CLI diagnostics can include access tokens or complete environment values.
       throw new SetupError('CLI_FAILED', `${name} ${args[0] ?? ''} failed. Verify the tool and selected azd environment; do not enable secret/debug logging.`);
     }

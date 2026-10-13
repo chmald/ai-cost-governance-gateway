@@ -80,8 +80,23 @@ $mainText = Get-Content -LiteralPath (Join-Path $infra 'main.bicep') -Raw
 
 Assert-Condition ($main.'$schema' -match 'subscriptionDeploymentTemplate') 'The azd foundation must be subscription scoped.'
 Assert-Condition (@($all | Where-Object { $_.type -in @('Microsoft.App/containerApps', 'Microsoft.App/jobs') }).Count -eq 0) 'Provision must never create an app revision, placeholder or executable migration job.'
-Assert-Condition (@($all | Where-Object type -EQ 'Microsoft.CognitiveServices/accounts').Count -eq 0) 'Foundry must remain an existing account.'
-Assert-Condition ($mainText.Contains("scope: resourceGroup(foundryResourceGroup)")) 'Foundry access must target its explicit existing RG in this subscription.'
+Assert-Condition ($main.parameters.foundrySetupMode.defaultValue -eq 'reuse' -and ($main.parameters.foundrySetupMode.allowedValues -join ',') -eq 'reuse,create') 'Foundry creation must be opt-in; reuse remains the default.'
+$foundryDeployment = @($all | Where-Object { $_.type -eq 'Microsoft.Resources/deployments' -and "$($_.name)" -match 'gateway-foundry-' -and "$($_.name)" -notmatch 'access' })
+Assert-Condition ($foundryDeployment.Count -eq 1 -and $foundryDeployment[0].condition -match "equals\(parameters\('foundrySetupMode'\), 'create'\)") 'Create Foundry only through the conditional Bicep module.'
+Assert-Condition ($foundryDeployment[0].resourceGroup -match 'rg-' -and $foundryDeployment[0].properties.parameters.location.value -ceq "[parameters('location')]") 'New Foundry must share the demo group and location.'
+$foundryAccount = Get-Resource $all 'Microsoft.CognitiveServices/accounts'
+$foundryProject = Get-Resource $all 'Microsoft.CognitiveServices/accounts/projects'
+Assert-Condition ($foundryAccount.kind -eq 'AIServices' -and $foundryAccount.sku.name -eq 'S0') 'Dedicated Foundry must use standard AIServices S0, not a gateway preview tier.'
+Assert-Condition ($foundryAccount.properties.disableLocalAuth -eq $true -and $foundryAccount.properties.allowProjectManagement -eq $true) 'New Foundry must support projects with Entra-only auth.'
+Assert-Condition ($foundryAccount.properties.publicNetworkAccess -eq 'Enabled' -and $foundryAccount.properties.networkAcls.defaultAction -eq 'Allow' -and $foundryAccount.properties.networkAcls.bypass -eq 'None') 'New Foundry requires public HTTPS from isolated ACA; do not imply private connectivity or service bypass.'
+Assert-Condition ($foundryAccount.properties.customSubDomainName -ceq "[parameters('accountName')]" -and $foundryAccount.tags -ceq "[parameters('tags')]" -and $foundryProject.tags -ceq "[parameters('tags')]") 'Account endpoint and ownership tags must follow the persisted name and demo tags.'
+Assert-Condition (($foundryProject.dependsOn -join ' ') -match 'Microsoft.CognitiveServices/accounts') 'Project must wait for the new account.'
+Assert-Condition (@($all | Where-Object type -EQ 'Microsoft.CognitiveServices/accounts/deployments').Count -eq 0) 'Model deployments and pricing remain portal-managed; provision no model by default.'
+Assert-Condition (@($all | Where-Object type -Match 'capabilityHosts|networkInjections').Count -eq 0) 'No hosted-agent capability resources are part of this profile.'
+Assert-Condition ($mainText.Contains("scope: resourceGroup(foundrySetupMode == 'create' ? rg.name : foundryResourceGroup)")) 'Foundry access must use the new demo group or explicit reuse group.'
+$foundryAccessDeployment = @($all | Where-Object { $_.type -eq 'Microsoft.Resources/deployments' -and "$($_.name)" -match 'gateway-foundry-access-' })[0]
+Assert-Condition (($foundryAccessDeployment.dependsOn -join ' ') -match 'gateway-foundry-' -and ($foundryAccessDeployment.dependsOn -join ' ') -match 'gateway-foundation') 'Foundry RBAC must wait for account creation and runtime identity.'
+Assert-Condition ($main.outputs.FOUNDRY_ENDPOINT.value -match 'foundrySetupMode' -and $templates.foundry.outputs.endpoint.value -match 'services.ai.azure.com/') 'Prepare/provision/revision must share the account-root services.ai endpoint.'
 Assert-Condition ($mainText.Contains("'../modules/foundry-access.bicep'")) 'Reuse the manual profile least-privilege Foundry module.'
 Assert-Condition ($foundationText.Contains("'../../modules/gateway.bicep'")) 'Reuse the existing gateway policies without modifying the manual profile.'
 
@@ -128,17 +143,37 @@ foreach ($assignment in $acr.roleAssignments.value) {
 }
 Assert-Condition (($acr.roleAssignments.value.principalId -join ' ') -match 'runtime-identity' -and ($acr.roleAssignments.value.principalId -join ' ') -match 'migration-identity') 'AcrPull must target each distinct identity.'
 
-$network = Get-Resource $all 'Microsoft.Network/virtualNetworks'
+$network = Get-Resource @($foundationResources | Where-Object { $_.type -ne 'Microsoft.Network/virtualNetworks' -or $_.properties.subnets.Count -eq 2 }) 'Microsoft.Network/virtualNetworks'
 $subnets = $network.properties.subnets
 Assert-Condition ($subnets.Count -eq 2) 'ACA and PostgreSQL must use separate subnets.'
 Assert-Condition ($subnets[0].properties.delegations[0].properties.serviceName -eq 'Microsoft.App/environments') 'Workload-profile ACA subnet needs Microsoft.App/environments delegation.'
 Assert-Condition ($subnets[1].properties.delegations[0].properties.serviceName -eq 'Microsoft.DBforPostgreSQL/flexibleServers') 'PostgreSQL subnet needs its own delegation.'
-$dnsLink = Get-Resource $all 'Microsoft.Network/privateDnsZones/virtualNetworkLinks'
+$dnsLink = Get-Resource @($foundationResources | Where-Object { $_.type -ne 'Microsoft.Network/privateDnsZones/virtualNetworkLinks' -or $_.name -match "'gateway-network'" }) 'Microsoft.Network/privateDnsZones/virtualNetworkLinks'
 Assert-Condition ($dnsLink.properties.registrationEnabled -eq $false -and $dnsLink.properties.virtualNetwork.id -match 'virtualNetworks') 'PostgreSQL private DNS must be linked to the shared VNet.'
 $environment = Get-Resource $all 'Microsoft.App/managedEnvironments'
 Assert-Condition ($environment.properties.workloadProfiles.Count -eq 1 -and $environment.properties.workloadProfiles[0].workloadProfileType -eq 'Consumption') 'Provision only the ACA Consumption workload profile.'
 Assert-Condition ($environment.properties.vnetConfiguration.infrastructureSubnetId -match 'subnets/container-apps') 'ACA and migration jobs must reach PostgreSQL through the shared private network.'
 Assert-Condition ($environment.properties.appLogsConfiguration.destination -eq 'log-analytics') 'Retain migration and application diagnostic logs.'
+Assert-Condition ($main.parameters.containerAppsLocation.defaultValue -eq '' -and $foundation.parameters.containerAppsLocation.defaultValue -ceq "[parameters('location')]") 'Container Apps must retain the primary region by default.'
+Assert-Condition ($environment.location -ceq "[parameters('containerAppsLocation')]" -and $postgres.location -ceq "[parameters('location')]") 'Container Apps region override must not move the database.'
+$remoteNetworkDeployment = @($foundationResources | Where-Object { $_.type -eq 'Microsoft.Resources/deployments' -and $_.name -eq 'gateway-container-apps-network' })[0]
+Assert-Condition ($remoteNetworkDeployment.condition -match 'crossRegionContainerApps') 'Only a cross-region application needs the additional VNet.'
+$remoteNetwork = Get-Resource @(Get-TemplateResources $templates.'container-apps-network') 'Microsoft.Network/virtualNetworks'
+Assert-Condition ($network.properties.addressSpace.addressPrefixes[0] -eq '10.42.0.0/16' -and $remoteNetwork.properties.addressSpace.addressPrefixes[0] -eq '10.43.0.0/16') 'Application and database networks must not overlap.'
+$peerings = @($all | Where-Object type -EQ 'Microsoft.Network/virtualNetworks/virtualNetworkPeerings')
+Assert-Condition ($peerings.Count -eq 2) 'Cross-region private routing requires both peering directions.'
+foreach ($peering in $peerings) {
+    Assert-Condition ($peering.properties.allowVirtualNetworkAccess -eq $true -and $peering.properties.allowForwardedTraffic -eq $false -and $peering.properties.allowGatewayTransit -eq $false -and $peering.properties.useRemoteGateways -eq $false) 'Peerings must enable only direct private network access.'
+}
+$remoteDns = Get-Resource @(Get-TemplateResources $templates.'container-apps-network') 'Microsoft.Network/privateDnsZones/virtualNetworkLinks'
+Assert-Condition ($remoteDns.properties.registrationEnabled -eq $false -and $remoteDns.properties.virtualNetwork.id -match 'virtualNetworks') 'Remote application network needs PostgreSQL private DNS linkage.'
+$postgresNsg = Get-Resource $foundationResources 'Microsoft.Network/networkSecurityGroups'
+$databaseIngress = $postgresNsg.properties.securityRules | Where-Object name -EQ AllowContainerAppsPostgres
+Assert-Condition ($databaseIngress.properties.sourceAddressPrefix -match 'containerAppsSubnetPrefix' -and $databaseIngress.properties.destinationAddressPrefix -eq '10.42.2.0/24' -and $databaseIngress.properties.destinationPortRange -eq '5432') 'Database ingress must stay limited to the selected application subnet and PostgreSQL port.'
+foreach ($entry in @('gateway', 'migration-job')) {
+    $parameters = Get-Content -LiteralPath (Join-Path $infra "$entry.parameters.json") -Raw | ConvertFrom-Json -AsHashtable
+    Assert-Condition ($parameters.parameters.location.value -ceq '${AZURE_CONTAINER_APPS_LOCATION}') 'Application and migration must use the resolved Container Apps region output.'
+}
 
 $definitions = @($all | Where-Object type -EQ 'Microsoft.Authorization/roleDefinitions')
 Assert-Condition ($definitions.Count -eq 2) 'Only Foundry deployment manager and APIM registrar custom roles are expected.'
@@ -165,6 +200,11 @@ foreach ($definition in $definitions) {
 Assert-Condition ($foundationText -match 'principalId: runtimeIdentity.outputs.principalId\s+principalType: ''ServicePrincipal''\s+roleDefinitionId: apiRegistrar.id') 'APIM registrar must be assigned only to runtime identity.'
 $apim = Get-Resource $all 'Microsoft.ApiManagement/service'
 Assert-Condition ($apim.identity.type -eq 'SystemAssigned' -and $main.parameters.apimSku.defaultValue -eq 'Developer') 'APIM must have its proof identity and explicit development SKU default.'
+Assert-Condition ($main.parameters.apimLocation.defaultValue -eq '') 'APIM location override must default to the primary region.'
+$apimDeployment = @($foundationResources | Where-Object { $_.type -eq 'Microsoft.Resources/deployments' -and $_.name -eq 'gateway-apim' })
+Assert-Condition ($apimDeployment.Count -eq 1 -and $apimDeployment[0].properties.parameters.location.value -ceq "[parameters('apimLocation')]") 'APIM alone must receive the independent region.'
+Assert-Condition ($foundationText.Contains("apimLocation == location ? resourceToken : uniqueString(subscription().id, tags['azd-env-name'], apimLocation)")) 'Default APIM names must remain stable; a different region needs a distinct name.'
+Assert-Condition ($foundation.parameters.apimLocation.defaultValue -ceq "[parameters('location')]") 'Direct foundation deployments must retain the original APIM region by default.'
 
 $insights = Get-Resource $all 'Microsoft.Insights/components'
 Assert-Condition ($insights.properties.DisableLocalAuth -eq $true -and $insights.properties.CustomMetricsOptedInType -eq 'WithDimensions' -and $insights.properties.WorkspaceResourceId -match 'logAnalyticsWorkspaceId') 'Application Insights must be workspace-based, Entra-only and accept dimensioned custom metrics.'

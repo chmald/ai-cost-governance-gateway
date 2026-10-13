@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { isIP } from 'node:net';
+import { createHash } from 'node:crypto';
 import { ARM, appApiVersion, armNamePattern, guidPattern, publicOrigin, readEventually, required, resourcePath, root, SetupError, waitFor } from './common.mjs';
 import { completeIdentity, setupRegistrations } from './identity.mjs';
 
@@ -9,6 +10,8 @@ export async function prepare(io, env, { readOnly = false } = {}) {
   await io.prompt(env, 'AZURE_LOCATION', 'Azure region (for example eastus2)');
   const subscription = required(env, 'AZURE_SUBSCRIPTION_ID', guidPattern);
   required(env, 'AZURE_LOCATION', /^[a-z][a-z0-9]{1,40}$/);
+  if (env.APIM_LOCATION) required(env, 'APIM_LOCATION', /^[a-z][a-z0-9]{1,40}$/);
+  if (env.CONTAINER_APPS_LOCATION) required(env, 'CONTAINER_APPS_LOCATION', /^[a-z][a-z0-9]{1,40}$/);
   const version = await io.command('azd', ['version']);
   if (!/azd version 1\.(?:[3-9]\d|\d{3,})\./.test(version)) {
     throw new SetupError('AZD_VERSION', 'This workflow requires azd 1.30 or newer within major version 1.');
@@ -36,28 +39,20 @@ export async function prepare(io, env, { readOnly = false } = {}) {
   } catch (error) {
     if (!(error instanceof SetupError) || error.status !== 404) throw error;
   }
-  await io.prompt(env, 'FOUNDRY_RESOURCE_GROUP', 'Existing Foundry resource group');
-  await io.prompt(env, 'FOUNDRY_ACCOUNT_NAME', 'Existing Foundry account name');
+  const { body: capabilities } = await io.arm(env,
+    `/subscriptions/${subscription}/providers/Microsoft.DBforPostgreSQL/locations/${env.AZURE_LOCATION}/capabilities?api-version=2024-08-01`);
+  const postgres = Array.isArray(capabilities?.value)
+    ? capabilities.value.find(item => item?.name === 'FlexibleServerCapabilities') : undefined;
+  if (!['Enabled', 'Disabled'].includes(postgres?.restricted) || !Array.isArray(postgres?.supportedServerEditions)) {
+    throw new SetupError('INVALID_REGION_CAPABILITIES', 'Azure did not return valid PostgreSQL regional capabilities. Deployment is blocked until subscription eligibility can be verified.');
+  }
+  if (postgres.restricted === 'Enabled' || postgres.supportedServerEditions.length === 0) {
+    throw new SetupError('POSTGRES_REGION_RESTRICTED', `PostgreSQL Flexible Server provisioning is unavailable for this subscription in ${env.AZURE_LOCATION}. Request regional access under Service and subscription limits, or obtain approval for another AZURE_LOCATION before retrying. No Foundry or Entra setup was started.`);
+  }
+  await prepareFoundry(io, env, group);
   await io.prompt(env, 'APIM_PUBLISHER_NAME', 'APIM publisher name', 'AI Gateway Team');
   await io.prompt(env, 'APIM_PUBLISHER_EMAIL', 'APIM publisher email');
   required(env, 'APIM_PUBLISHER_EMAIL', /^[^\s@]+@[^\s@]+\.[^\s@]+$/);
-  const foundryGroup = required(env, 'FOUNDRY_RESOURCE_GROUP', armNamePattern);
-  const account = required(env, 'FOUNDRY_ACCOUNT_NAME', /^[a-zA-Z0-9][a-zA-Z0-9-]{1,63}$/);
-  const { body: foundry } = await io.arm(env,
-    `/subscriptions/${subscription}/resourceGroups/${encodeURIComponent(foundryGroup)}/providers/Microsoft.CognitiveServices/accounts/${account}?api-version=2025-06-01`);
-  const domain = foundry?.properties?.customSubDomainName;
-  if (!['OpenAI', 'AIServices'].includes(foundry?.kind) || !/^[a-z0-9][a-z0-9-]{1,63}$/i.test(domain ?? '')) {
-    throw new SetupError('FOUNDRY_UNSUPPORTED', 'The existing account must be OpenAI or AIServices with a configured custom subdomain.');
-  }
-  if ((foundry.properties.publicNetworkAccess === 'Disabled' || foundry.properties.networkAcls?.defaultAction === 'Deny') &&
-      env.FOUNDRY_NETWORK_REVIEWED !== 'true') {
-    throw new SetupError('FOUNDRY_NETWORK_RESTRICTED', 'Foundry restricts network access. Review/customize routing, DNS or approved egress from the new ACA network before setting FOUNDRY_NETWORK_REVIEWED=true. Setup will not open the existing account firewall.');
-  }
-  const endpoint = `https://${domain}.${foundry.kind === 'OpenAI' ? 'openai' : 'services.ai'}.azure.com`;
-  if (env.FOUNDRY_ENDPOINT && publicOrigin(env.FOUNDRY_ENDPOINT, '.azure.com').toLowerCase() !== endpoint.toLowerCase()) {
-    throw new SetupError('FOUNDRY_ENDPOINT_MISMATCH', 'FOUNDRY_ENDPOINT does not match the selected account and its verified custom subdomain.');
-  }
-  await io.save(env, 'FOUNDRY_ENDPOINT', `${endpoint}/`);
   if (!env.APIM_SKU) await io.save(env, 'APIM_SKU', 'Developer');
   if (!['Developer', 'BasicV2', 'StandardV2', 'PremiumV2'].includes(env.APIM_SKU)) {
     throw new SetupError('INVALID_SKU', 'Select an APIM Developer or supported v2 SKU.');
@@ -71,6 +66,81 @@ export async function prepare(io, env, { readOnly = false } = {}) {
   await setupRegistrations(io, env, { readOnly });
   validateMcpAllowlists(env);
   validateScale(env);
+}
+
+async function optionalResource(io, env, path) {
+  try { return (await io.arm(env, path)).body; } catch (error) {
+    if (error instanceof SetupError && error.status === 404) return undefined;
+    throw error;
+  }
+}
+
+function ownedFoundry(resource, env) {
+  return resource?.tags?.['azd-env-name'] === env.AZURE_ENV_NAME &&
+    resource.tags.application === 'foundry-ai-gateway' && resource.location === env.AZURE_LOCATION;
+}
+
+async function prepareFoundry(io, env, group) {
+  const mode = env.FOUNDRY_SETUP_MODE ?? 'reuse';
+  if (!['reuse', 'create'].includes(mode)) {
+    throw new SetupError('INVALID_FOUNDRY_MODE', 'FOUNDRY_SETUP_MODE must be reuse (default) or create.');
+  }
+  let endpoint;
+  if (mode === 'create') {
+    const suffix = createHash('sha256').update([
+      env.AZURE_SUBSCRIPTION_ID.toLowerCase(), env.AZURE_ENV_NAME, env.AZURE_LOCATION,
+    ].join(':')).digest('hex').slice(0, 20);
+    const account = `gateway-foundry-${suffix}`;
+    if ((env.FOUNDRY_CREATED_ACCOUNT_NAME && env.FOUNDRY_CREATED_ACCOUNT_NAME !== account) ||
+        (env.FOUNDRY_ACCOUNT_NAME && env.FOUNDRY_ACCOUNT_NAME !== account) ||
+        (env.FOUNDRY_RESOURCE_GROUP && env.FOUNDRY_RESOURCE_GROUP !== group)) {
+      throw new SetupError('FOUNDRY_TARGET_MISMATCH', 'Create mode only targets its deterministic owned account in rg-<environment>. Use a fresh environment; do not redirect a reuse deployment or change its target.');
+    }
+    if (!env.FOUNDRY_CREATED_ACCOUNT_NAME) await io.save(env, 'FOUNDRY_CREATED_ACCOUNT_NAME', account);
+    await io.save(env, 'FOUNDRY_ACCOUNT_NAME', account);
+    await io.save(env, 'FOUNDRY_RESOURCE_GROUP', group);
+    if (!env.FOUNDRY_PROJECT_NAME) await io.save(env, 'FOUNDRY_PROJECT_NAME', 'gateway-project');
+    const project = required(env, 'FOUNDRY_PROJECT_NAME', /^[a-z][a-z0-9-]{1,63}$/);
+    const path = `/subscriptions/${env.AZURE_SUBSCRIPTION_ID}/resourceGroups/${group}/providers/Microsoft.CognitiveServices/accounts/${account}`;
+    const foundry = await optionalResource(io, env, `${path}?api-version=2025-06-01`);
+    if (foundry) {
+      if (!ownedFoundry(foundry, env)) {
+        throw new SetupError('FOUNDRY_NOT_OWNED', 'Create mode refuses to adopt an unrelated Foundry account.');
+      }
+      if (foundry.kind !== 'AIServices' || foundry.sku?.name !== 'S0' ||
+          foundry.properties?.customSubDomainName !== account ||
+          foundry.properties.disableLocalAuth !== true || foundry.properties.allowProjectManagement !== true ||
+          foundry.properties.publicNetworkAccess !== 'Enabled' ||
+          foundry.properties.networkAcls?.defaultAction === 'Deny') {
+        throw new SetupError('FOUNDRY_CREATE_DRIFT', 'The owned account no longer matches the Entra-only S0/public-HTTPS create profile. Review drift explicitly; setup will not open or repurpose it.');
+      }
+      const existingProject = await optionalResource(io, env, `${path}/projects/${project}?api-version=2025-06-01`);
+      if (existingProject && !ownedFoundry(existingProject, env)) {
+        throw new SetupError('FOUNDRY_PROJECT_NOT_OWNED', 'Create mode refuses to adopt an unrelated Foundry project.');
+      }
+    }
+    endpoint = `https://${account}.services.ai.azure.com`;
+  } else {
+    await io.prompt(env, 'FOUNDRY_RESOURCE_GROUP', 'Existing Foundry resource group');
+    await io.prompt(env, 'FOUNDRY_ACCOUNT_NAME', 'Existing Foundry account name');
+    const foundryGroup = required(env, 'FOUNDRY_RESOURCE_GROUP', armNamePattern);
+    const account = required(env, 'FOUNDRY_ACCOUNT_NAME', /^[a-zA-Z0-9][a-zA-Z0-9-]{1,63}$/);
+    const { body: foundry } = await io.arm(env,
+      `/subscriptions/${env.AZURE_SUBSCRIPTION_ID}/resourceGroups/${encodeURIComponent(foundryGroup)}/providers/Microsoft.CognitiveServices/accounts/${account}?api-version=2025-06-01`);
+    const domain = foundry?.properties?.customSubDomainName;
+    if (!['OpenAI', 'AIServices'].includes(foundry?.kind) || !/^[a-z0-9][a-z0-9-]{1,63}$/i.test(domain ?? '')) {
+      throw new SetupError('FOUNDRY_UNSUPPORTED', 'The existing account must be OpenAI or AIServices with a configured custom subdomain.');
+    }
+    if ((foundry.properties.publicNetworkAccess === 'Disabled' || foundry.properties.networkAcls?.defaultAction === 'Deny') &&
+        env.FOUNDRY_NETWORK_REVIEWED !== 'true') {
+      throw new SetupError('FOUNDRY_NETWORK_RESTRICTED', 'Foundry restricts network access. Review/customize routing, DNS or approved egress from the new ACA network before setting FOUNDRY_NETWORK_REVIEWED=true. Setup will not open the existing account firewall.');
+    }
+    endpoint = `https://${domain}.${foundry.kind === 'OpenAI' ? 'openai' : 'services.ai'}.azure.com`;
+  }
+  if (env.FOUNDRY_ENDPOINT && publicOrigin(env.FOUNDRY_ENDPOINT, '.azure.com').toLowerCase() !== endpoint.toLowerCase()) {
+    throw new SetupError('FOUNDRY_ENDPOINT_MISMATCH', 'FOUNDRY_ENDPOINT does not match the selected account and its custom subdomain.');
+  }
+  await io.save(env, 'FOUNDRY_ENDPOINT', `${endpoint}/`);
 }
 
 export async function checkTarget(io, env) {
@@ -145,7 +215,7 @@ function migrationParameters(env, image) {
   return {
     environmentName: required(env, 'AZURE_ENV_NAME'),
     jobName: required(env, 'MIGRATION_JOB_NAME', armNamePattern),
-    location: required(env, 'AZURE_LOCATION', /^[a-z][a-z0-9]{1,40}$/),
+    location: required(env, env.AZURE_CONTAINER_APPS_LOCATION ? 'AZURE_CONTAINER_APPS_LOCATION' : 'AZURE_LOCATION', /^[a-z][a-z0-9]{1,40}$/),
     containerAppsEnvironmentName: required(env, 'AZURE_CONTAINER_APPS_ENVIRONMENT_NAME', armNamePattern),
     containerRegistryName: required(env, 'AZURE_CONTAINER_REGISTRY_NAME', armNamePattern),
     migrationIdentityId: required(env, 'MIGRATION_IDENTITY_ID'),
